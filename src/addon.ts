@@ -7334,15 +7334,26 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                                 for (const m of inizio.matchAll(/RESOLUTION=(\d+)x(\d+)/g)) { const w = Number(m[1]), h = Number(m[2]); if (w > bw) { bw = w; bh = h; } }
                                 return bw ? larghezzaARis(bw, bh) : '';
                             }
-                            let i = buf.indexOf('tkhd');
-                            while (i > 4) {
-                                const ver = buf[i + 4];
-                                const off = i + 4 + 4 + (ver === 1 ? 32 : 20) + 16 + 36;
-                                if (off + 8 <= buf.length) {
-                                    const w = buf.readUInt32BE(off) / 65536, h = buf.readUInt32BE(off + 4) / 65536;
-                                    if (w > 0 && h > 0) return larghezzaARis(Math.round(w), Math.round(h));
+                            const cercaTkhd = (b: Buffer): string => {
+                                let i = b.indexOf('tkhd');
+                                while (i > 4) {
+                                    const ver = b[i + 4];
+                                    const off = i + 4 + 4 + (ver === 1 ? 32 : 20) + 16 + 36;
+                                    if (off + 8 <= b.length) {
+                                        const w = b.readUInt32BE(off) / 65536, h = b.readUInt32BE(off + 4) / 65536;
+                                        if (w > 0 && h > 0) return larghezzaARis(Math.round(w), Math.round(h));
+                                    }
+                                    i = b.indexOf('tkhd', i + 4);
                                 }
-                                i = buf.indexOf('tkhd', i + 4);
+                                return '';
+                            };
+                            const trovata = cercaTkhd(buf);
+                            if (trovata) return trovata;
+                            // mp4 con il moov in fondo al file (AnimeSaturn, AnimeWorld): si leggono gli ultimi 3 MB
+                            const tot = Number((r.headers.get('content-range') || '').split('/')[1] || 0);
+                            if (r.status === 206 && tot > 1048576) {
+                                const r2 = await fetch(url, { headers: { ...hdr, Range: `bytes=${Math.max(0, tot - 3145728)}-${tot - 1}` }, signal: AbortSignal.timeout(3500) });
+                                if (r2.status === 206) return cercaTkhd(Buffer.from(await r2.arrayBuffer()));
                             }
                         } catch {
                             // fonte lenta o non leggibile: resta senza risoluzione
