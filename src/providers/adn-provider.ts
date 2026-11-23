@@ -26,7 +26,8 @@ export interface AdnConfig {
     cookie?: string;
 }
 
-const BASE_URL = 'https://altadefinizionestreaming.tv';
+// Fork Ture919 (23/11/2026): stesso dominio del plugin EasyStreams (.tv non è più quello usato dai plugin); ADN_BASE_URL per cambiarlo
+const BASE_URL = (process.env.ADN_BASE_URL || 'https://altadefinizionestreaming.net').replace(/\/$/, '');
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 
 function getCookie(config?: AdnConfig): string {
