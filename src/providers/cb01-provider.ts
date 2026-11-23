@@ -365,13 +365,27 @@ export class Cb01Provider {
         log('series search html', { url: searchUrl, len: searchHtml.length, snippet: searchHtml.slice(0, 220) });
 
         // Match possible urls
-        const divRe = /<div[^>]+class="card-content"[\s\S]*?<h3[^>]*class="card-title"[\s\S]*?<a[^>]+href="([^"]+)"/gi;
+        const divRe = /<div[^>]+class="card-content"[\s\S]*?<h3[^>]*class="card-title"[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
         let m: RegExpExecArray | null;
         let serieHref: string | null = null;
 
-        // Cerca l'URL che fa match con l'anno (esattamente come MammaMia: solo year match)
+        // Prima bastava l'anno: cercando "From" usciva "Diarra From Detroit" (stesso periodo).
+        // Ora il titolo della scheda deve coincidere, oppure contenere tutte le parole cercate
+        // se sono almeno due (stessa regola dei film in pickYearMatch).
+        const want = this.normTitle(title || '');
+        const wantWords = want ? want.split(' ') : [];
+        const titoloOk = (testo: string): boolean => {
+            if (!want) return true;
+            const got = this.normTitle(testo);
+            if (got === want) return true;
+            const gotWords = got.split(' ');
+            return wantWords.length >= 2 && wantWords.every(w => gotWords.includes(w));
+        };
+
+        // Cerca l'URL che fa match con titolo e anno
         const regexYear = /(19|20)\d{2}/;
         while ((m = divRe.exec(searchHtml))) {
+            if (!titoloOk(m[2])) { log('series card scartata (titolo diverso)', { want: title, href: m[1] }); continue; }
             const txtMatch = searchHtml.substring(m.index, m.index + 400).match(/<span[^>]*style="color[^"]*"[^>]*>([^<]+)<\/span>/i);
             if (txtMatch) {
                 const mYear = txtMatch[1].match(regexYear);
@@ -388,9 +402,9 @@ export class Cb01Provider {
         if (!serieHref) {
             const m2 = divRe.exec(searchHtml.slice(0));
             // Reset and check if any card has NO year span at all — if so, use first href
-            const reFirst = /<div[^>]+class="card-content"[\s\S]*?<h3[^>]*class="card-title"[\s\S]*?<a[^>]+href="([^"]+)"/i;
+            const reFirst = /<div[^>]+class="card-content"[\s\S]*?<h3[^>]*class="card-title"[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i;
             const checkFirst = searchHtml.match(reFirst);
-            if (checkFirst) {
+            if (checkFirst && titoloOk(checkFirst[2])) {
                 const nearby = searchHtml.substring(searchHtml.indexOf(checkFirst[1]) - 50, searchHtml.indexOf(checkFirst[1]) + 400);
                 const hasYear = /<span[^>]*style="color/.test(nearby);
                 if (!hasYear) serieHref = checkFirst[1];
