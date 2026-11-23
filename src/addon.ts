@@ -7315,10 +7315,52 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         const c = [daFile, daTitolo].find((x) => x && !generico(x) && !/toon\.?italia/i.test(x));
                         if (c) { titoloVero = c; break; }
                     }
+                    // Sonda della risoluzione per le fonti che non la dichiarano (AnimeSaturn, AnimeWorld, VidXgo, Toonitalia, Uqload):
+                    // playlist HLS -> RESOLUTION più alta; MP4 -> larghezza/altezza dal box 'tkhd' nei primi 1 MB. Max 3,5 s, niente se fallisce.
+                    const larghezzaARis = (w: number, h: number): string => {
+                        const x = Math.max(w, Math.round((h * 16) / 9));
+                        return x >= 3400 ? '2160p' : x >= 2300 ? '1440p' : x >= 1800 ? '1080p' : x >= 1200 ? '720p' : x >= 960 ? '576p' : x >= 800 ? '480p' : x > 0 ? '360p' : '';
+                    };
+                    const sondaRisoluzione = async (st: any): Promise<string> => {
+                        const url = String(st?.url || '');
+                        if (!/^https?:\/\//i.test(url)) return '';
+                        const hdr = st.behaviorHints?.proxyHeaders?.request || st.behaviorHints?.headers || {};
+                        try {
+                            const r = await fetch(url, { headers: { ...hdr, Range: 'bytes=0-1048575' }, signal: AbortSignal.timeout(3500) });
+                            const buf = Buffer.from(await r.arrayBuffer());
+                            const inizio = buf.subarray(0, 300000).toString('latin1');
+                            if (/#EXTM3U/.test(inizio)) {
+                                let bw = 0, bh = 0;
+                                for (const m of inizio.matchAll(/RESOLUTION=(\d+)x(\d+)/g)) { const w = Number(m[1]), h = Number(m[2]); if (w > bw) { bw = w; bh = h; } }
+                                return bw ? larghezzaARis(bw, bh) : '';
+                            }
+                            let i = buf.indexOf('tkhd');
+                            while (i > 4) {
+                                const ver = buf[i + 4];
+                                const off = i + 4 + 4 + (ver === 1 ? 32 : 20) + 16 + 36;
+                                if (off + 8 <= buf.length) {
+                                    const w = buf.readUInt32BE(off) / 65536, h = buf.readUInt32BE(off + 4) / 65536;
+                                    if (w > 0 && h > 0) return larghezzaARis(Math.round(w), Math.round(h));
+                                }
+                                i = buf.indexOf('tkhd', i + 4);
+                            }
+                        } catch {
+                            // fonte lenta o non leggibile: resta senza risoluzione
+                        }
+                        return '';
+                    };
+                    await Promise.all((allStreams as any[]).map(async (st: any) => {
+                        if (!st || st.behaviorHints?.filename) return;
+                        const t = `${st.name || ''} ${st.title || ''} ${st.description || ''}`;
+                        if (/🅵🅷🅳|\bFHD\b|\b(2160|1440|1080|720|576|480)p?\b/i.test(t)) return;
+                        const ris = await sondaRisoluzione(st);
+                        if (ris) st.__risoluzioneSondata = ris;
+                    }));
                     for (const st of allStreams as any[]) {
                         if (!st || st.behaviorHints?.filename) continue;
                         const testo = `${st.name || ''} ${st.title || ''} ${st.description || ''}`;
-                        const res = /🅵🅷🅳|\bFHD\b|\b1080p?\b/i.test(testo) ? '1080p' : (/\b720p?\b/i.test(testo) ? '720p' : '');
+                        const res = /🅵🅷🅳|\bFHD\b|\b1080p?\b/i.test(testo) ? '1080p' : (/\b720p?\b/i.test(testo) ? '720p' : (st.__risoluzioneSondata || ''));
+                        delete st.__risoluzioneSondata;
                         const lingue: string[] = [];
                         if (/🇮🇹|\[ITA\]|\bITA\b/.test(testo)) lingue.push('ITA');
                         if (/🇬🇧|\bENG\b/.test(testo)) lingue.push('ENG');
