@@ -1030,15 +1030,29 @@ export async function getStreamContent(id: string, type: ContentType, config: Ex
       }
     }
 
+    // Fork Ture919 (23/11/2026): invece del default fisso ITA+ENG si legge la playlist (via EasyProxy) e si usano le
+    // lingue audio dichiarate (#EXT-X-MEDIA TYPE=AUDIO); se non ne dichiara, c'è un solo audio: italiano (catalogo italiano).
+    let linguaRilevata = 'ita'; // se la playlist non si legge in tempo: solo ITA (catalogo italiano), mai inglese inventato
+    if (__vixMfpProxyOnly) {
+      try {
+        const r = await fetch(finalStreamUrl, { signal: AbortSignal.timeout(4000) });
+        const testo = r.ok ? await r.text() : '';
+        if (/#EXTM3U/.test(testo)) {
+          const audio = Array.from(testo.matchAll(/#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*LANGUAGE="([a-z]{2,3})"/gi)).map((m) => m[1].toLowerCase());
+          const uniche = Array.from(new Set(audio.map((l) => (l === 'it' ? 'ita' : l === 'en' ? 'eng' : l))));
+          linguaRilevata = uniche.length ? uniche.join(',') : 'ita';
+        }
+      } catch {
+        // playlist non leggibile in tempo: resta ITA
+      }
+    }
+
     return {
       name: finalNameForProxy,
       streamUrl: finalStreamUrl,
       referer: url,
       source: 'proxy',
-      // In MFP Proxy puro non possiamo rilevare le lingue dal master m3u8
-      // (non lo scarichiamo). Settiamo default ITA+ENG (bandiere 🇮🇹 🇬🇧)
-      // come da richiesta utente, coerente con i contenuti tipici di VixSrc.
-      ...(__vixMfpProxyOnly ? { detectedLang: 'ita,eng' } : {}),
+      ...(__vixMfpProxyOnly ? { detectedLang: linguaRilevata } : {}),
       ...(typeof sizeBytes === 'number' ? { sizeBytes } : {})
     };
   }
