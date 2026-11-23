@@ -7388,7 +7388,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     // dati che il player mostra in riproduzione (es. H264 + AAC).
                     const codecVideo = (s: string): string => /hvc1|hev1/i.test(s) ? 'HEVC' : /av01/i.test(s) ? 'AV1' : /avc1|avc3/i.test(s) ? 'H264' : '';
                     const codecAudio = (s: string): string => /ec-3/i.test(s) ? 'EAC3' : /ac-3/i.test(s) ? 'AC3' : /mp4a/i.test(s) ? 'AAC' : /opus/i.test(s) ? 'OPUS' : '';
-                    type Sonda = { res: string; vc: string; ac: string; morta?: boolean };
+                    type Sonda = { res: string; vc: string; ac: string; morta?: boolean; fonte?: string; peso?: number };
                     const sondaRisoluzione = async (st: any): Promise<Sonda> => {
                         const vuota: Sonda = { res: '', vc: '', ac: '' };
                         const url = String(st?.url || '');
@@ -7401,15 +7401,30 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                             const buf = Buffer.from(await r.arrayBuffer());
                             const inizio = buf.subarray(0, 300000).toString('latin1');
                             if (/#EXTM3U/.test(inizio)) {
-                                let bw = 0, bh = 0, codecs = '';
-                                for (const m of inizio.matchAll(/#EXT-X-STREAM-INF:([^\n]*)/g)) {
+                                let bw = 0, bh = 0, codecs = '', banda = 0, uriVar = '';
+                                for (const m of inizio.matchAll(/#EXT-X-STREAM-INF:([^\n]*)\n\s*([^\n#][^\n]*)/g)) {
                                     const rm = m[1].match(/RESOLUTION=(\d+)x(\d+)/); const cm = m[1].match(/CODECS="([^"]+)"/);
+                                    const bm = m[1].match(/AVERAGE-BANDWIDTH=(\d+)/) || m[1].match(/(?:^|,)BANDWIDTH=(\d+)/);
                                     const w = rm ? Number(rm[1]) : 0, h = rm ? Number(rm[2]) : 0;
-                                    if (w > bw || (!bw && cm)) { bw = w; bh = h; codecs = cm ? cm[1] : codecs; }
+                                    if (w > bw || (!bw && cm)) { bw = w; bh = h; codecs = cm ? cm[1] : codecs; banda = bm ? Number(bm[1]) : 0; uriVar = m[2].trim(); }
                                 }
-                                return { res: bw ? larghezzaARis(bw, bh) : '', vc: codecVideo(codecs), ac: codecAudio(codecs) };
+                                // peso STIMATO (scelta utente 23/11) = banda dichiarata x durata (somma degli #EXTINF della variante scelta);
+                                // niente stima per le dirette (playlist senza #EXT-X-ENDLIST)
+                                let peso = 0;
+                                try {
+                                    let lista = inizio;
+                                    if (uriVar) {
+                                        const rv = await fetch(new URL(uriVar, url).toString(), { headers: hdr, signal: AbortSignal.timeout(3500) });
+                                        lista = (await rv.text()).slice(0, 2000000);
+                                    }
+                                    let durata = 0;
+                                    for (const d of lista.matchAll(/#EXTINF:([\d.]+)/g)) durata += Number(d[1]);
+                                    if (!banda) { const b2 = inizio.match(/BANDWIDTH=(\d+)/); banda = b2 ? Number(b2[1]) : 0; }
+                                    if (banda && durata > 60 && /#EXT-X-ENDLIST/.test(lista)) peso = Math.round(banda * durata / 8);
+                                } catch { /* niente stima */ }
+                                return { res: bw ? larghezzaARis(bw, bh) : '', vc: codecVideo(codecs), ac: codecAudio(codecs), peso };
                             }
-                            const codecMp4 = (b: Buffer) => { const s = b.toString('latin1'); return { vc: codecVideo(s.match(/hvc1|hev1|av01|avc1|avc3/)?.[0] || ''), ac: codecAudio(s.match(/ec-3|ac-3|mp4a|[Oo]pus/)?.[0] || '') }; };
+                            const codecMp4 = (b: Buffer) => { const s = b.toString('latin1'); const f = s.match(/blu-?ray|bdrip|brrip|web-?dl|web-?rip|dvd-?rip|hdtv/i)?.[0] || ''; return { vc: codecVideo(s.match(/hvc1|hev1|av01|avc1|avc3/)?.[0] || ''), ac: codecAudio(s.match(/ec-3|ac-3|mp4a|[Oo]pus/)?.[0] || ''), fonte: f }; };
                             const cercaTkhd = (b: Buffer): string => {
                                 let i = b.indexOf('tkhd');
                                 while (i > 4) {
@@ -7423,13 +7438,13 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                                 }
                                 return '';
                             };
-                            const trovata = cercaTkhd(buf);
-                            if (trovata) return { res: trovata, ...codecMp4(buf) };
-                            // mp4 con il moov in fondo al file (AnimeSaturn, AnimeWorld): si leggono gli ultimi 3 MB
                             const tot = Number((r.headers.get('content-range') || '').split('/')[1] || 0);
+                            const trovata = cercaTkhd(buf);
+                            if (trovata) return { res: trovata, ...codecMp4(buf), peso: tot || undefined };
+                            // mp4 con il moov in fondo al file (AnimeSaturn, AnimeWorld): si leggono gli ultimi 3 MB
                             if (r.status === 206 && tot > 1048576) {
                                 const r2 = await fetch(url, { headers: { ...hdr, Range: `bytes=${Math.max(0, tot - 3145728)}-${tot - 1}` }, signal: AbortSignal.timeout(3500) });
-                                if (r2.status === 206) { const coda = Buffer.from(await r2.arrayBuffer()); return { res: cercaTkhd(coda), ...codecMp4(coda) }; }
+                                if (r2.status === 206) { const coda = Buffer.from(await r2.arrayBuffer()); return { res: cercaTkhd(coda), ...codecMp4(coda), peso: tot }; }
                             }
                         } catch {
                             // fonte lenta o non leggibile: resta senza risoluzione
@@ -7450,6 +7465,8 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         }
                     }
                     const RIS_RE = /(?<![0-9])(2160|1440|1080|720|576|480)[pi](?![a-z0-9])/ig;
+                    // origine (BluRay, WEB-DL...) scritta nel nome dal sito: resta solo se i metadati del file la confermano (scelta utente 23/11)
+                    const FONTE_RE = /(^|[._ -])(blu-?ray|bdrip|brrip|bd-?rip|web-?dl|web-?rip|webmux|dvd-?rip|hdtv|hdrip)(?=[._ -]|$)/ig;
                     for (const st of allStreams as any[]) {
                         if (!st || !st.behaviorHints?.filename) continue;
                         const s: Sonda | undefined = st.__sonda;
@@ -7462,7 +7479,8 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         RIS_RE.lastIndex = 0;
                         if (s.vc && !/\b(h\.?264|x264|avc|h\.?265|x265|hevc|av1)\b/i.test(fn)) fn += `.${s.vc}`;
                         if (s.ac && !/\b(aac|e?ac-?3|dd\+?|ddp|opus|dts|truehd)\b/i.test(fn)) fn += `.${s.ac}`;
-                        st.behaviorHints = { ...st.behaviorHints, filename: fn + ext };
+                        if (!s.fonte) fn = fn.replace(FONTE_RE, '$1').replace(/[._ -]{2,}/g, '.').replace(/^[._ -]+|[._ -]+$/g, '');
+                        st.behaviorHints = { ...st.behaviorHints, filename: fn + ext, ...(s.peso && !st.behaviorHints.videoSize ? { videoSize: s.peso } : {}) };
                     }
                     for (const st of allStreams as any[]) {
                         if (!st || st.behaviorHints?.filename) continue;
@@ -7485,10 +7503,11 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         RIS_RE.lastIndex = 0;
                         if (s.vc) base = base.replace(/(^|\.)(h\.?264|x264|avc|h\.?265|x265|hevc)(?=\.|$)/ig, '$1');
                         if (s.ac) base = base.replace(/(^|\.)(aac|e?ac3|dd\+?|ddp|dts)(?=\.|$)/ig, '$1');
+                        if (!s.fonte) base = base.replace(FONTE_RE, '$1');
                         base = base.replace(/\.{2,}/g, '.').replace(/^\.|\.$/g, '');
                         if (generico(base)) base = titoloVero;
                         const nome = [base ? base + ep : ep.replace(/^\./, ''), res, s.vc, s.ac, ...lingue].filter(Boolean).join('.');
-                        st.behaviorHints = { ...(st.behaviorHints || {}), filename: nome };
+                        st.behaviorHints = { ...(st.behaviorHints || {}), filename: nome, ...(s.peso && !st.behaviorHints?.videoSize ? { videoSize: s.peso } : {}) };
                     }
                 }
 
