@@ -7318,8 +7318,10 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     // Sonda della risoluzione per le fonti che non la dichiarano (AnimeSaturn, AnimeWorld, VidXgo, Toonitalia, Uqload):
                     // playlist HLS -> RESOLUTION più alta; MP4 -> larghezza/altezza dal box 'tkhd' nei primi 1 MB. Max 3,5 s, niente se fallisce.
                     const larghezzaARis = (w: number, h: number): string => {
-                        const x = Math.max(w, Math.round((h * 16) / 9));
-                        return x >= 3400 ? '2160p' : x >= 2300 ? '1440p' : x >= 1800 ? '1080p' : x >= 1200 ? '720p' : x >= 960 ? '576p' : x >= 800 ? '480p' : x > 0 ? '360p' : '';
+                        // larghezza "equivalente 16:9" a parità di pixel: un 4:3 1920x1440 (cartone ingrandito) resta FHD,
+                        // un 1440x1080 resta 1080p, un 960x720 resta 720p; i formati larghi (1920x800) contano per larghezza
+                        const x = Math.max(w, Math.round(Math.sqrt((w * h * 16) / 9)));
+                        return x >= 3400 ? '2160p' : x >= 2300 ? '1440p' : x >= 1600 ? '1080p' : x >= 1100 ? '720p' : x >= 850 ? '576p' : x >= 700 ? '480p' : x > 0 ? '360p' : '';
                     };
                     const sondaRisoluzione = async (st: any): Promise<string> => {
                         const url = String(st?.url || '');
