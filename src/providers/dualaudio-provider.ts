@@ -317,13 +317,13 @@ async function movySources(info: TmdbInfo, enTitle: string, isTv: boolean, s: nu
 async function videoIntero(videoUrl: string, headers: Record<string, string>): Promise<boolean> {
     try {
         let url = videoUrl;
-        let testo = await getText(url, headers, 8000);
+        let testo = await getText(url, headers, 4000);
         const varianti = [...testo.matchAll(/#EXT-X-STREAM-INF[^\n]*\n([^\n#][^\n]*)/g)].map((m) => m[1].trim());
-        if (varianti.length) { url = new URL(varianti[varianti.length - 1], url).toString(); testo = await getText(url, headers, 8000); }
+        if (varianti.length) { url = new URL(varianti[varianti.length - 1], url).toString(); testo = await getText(url, headers, 4000); }
         const pezzi = testo.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
         if (pezzi.length < 40) return true;
         for (const k of [Math.floor(pezzi.length / 2), pezzi.length - 1]) {
-            const r = await fetch(new URL(pezzi[k], url).toString(), { headers: { ...headers, Range: 'bytes=0-1023' }, signal: AbortSignal.timeout(6000) } as any);
+            const r = await fetch(new URL(pezzi[k], url).toString(), { headers: { ...headers, Range: 'bytes=0-1023' }, signal: AbortSignal.timeout(3000) } as any);
             try { await r.arrayBuffer(); } catch { /* corpo non letto */ }
             if (r.status === 404 || r.status === 410 || r.status === 403) return false;
         }
@@ -382,7 +382,7 @@ const VIDFAST_SITES = [
 ];
 const CINEJOY_API = 'https://api.wing.st';
 const CINEJOY_ORIGIN = 'https://cinejoy.pk';
-const DS_BUDGET_MS = 22000;
+const DS_BUDGET_MS = 10000; // Fork Ture919 23/11: AIOStreams aspetta TureFlix al massimo 20 s (prima 22000 = TureFlix intero in timeout)
 const DB_TOL_S = 0.25;
 
 interface Encode {

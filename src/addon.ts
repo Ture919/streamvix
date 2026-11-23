@@ -6743,6 +6743,9 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     };
                     const runProvider = async (name: string, enabled: boolean, handler: () => Promise<{ streams: Stream[] }>, streamName: string, isMixdropSensitive = false, timeoutMs: number | null = null): Promise<Stream[]> => {
                         if (!enabled) return [];
+                        // Fork Ture919 (23/11/2026): AIOStreams aspetta TureFlix al massimo 20 s; una fonte senza tempo massimo
+                        // poteva far perdere TUTTE le fonti (timeout intero). Default 11 s (STREAMVIX_PROVIDER_TIMEOUT_MS per cambiarlo).
+                        if (timeoutMs === null || timeoutMs <= 0) timeoutMs = Number(process.env.STREAMVIX_PROVIDER_TIMEOUT_MS || 11000);
                         try {
                             let result;
 
@@ -7181,25 +7184,25 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                             scheduleProviderRun('MovyITA', true, async () => {
                                 const { movyIta } = await import('./providers/dualaudio-provider');
                                 return { streams: await movyIta(pxReq) };
-                            }, 'MovyITA', false, 30000);
+                            }, 'MovyITA', false, 11000);
                         }
                         if (dualsyncEnabled && (pxSeries || isMovie)) {
                             scheduleProviderRun('DualSync', true, async () => {
                                 const { dualSync } = await import('./providers/dualaudio-provider');
                                 return { streams: await dualSync(pxReq) };
-                            }, 'DualSync', false, 30000);
+                            }, 'DualSync', false, 11000);
                         }
                         if (realtimeEnabled && pxSeries) {
                             scheduleProviderRun('RealTime', true, async () => {
                                 const { realtime } = await import('./providers/realtime-provider');
                                 return { streams: await realtime(pxReq) };
-                            }, 'Real Time', false, 25000);
+                            }, 'Real Time', false, 11000);
                         }
                         if (paccEnabled && (pxSeries || isMovie)) {
                             scheduleProviderRun('PaCC', true, async () => {
                                 const { pacc } = await import('./providers/pacc-provider');
                                 return { streams: await pacc(pxReq) };
-                            }, 'PaCC', false, 25000);
+                            }, 'PaCC', false, 11000);
                         }
                     }
 
@@ -7395,7 +7398,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         if (!/^https?:\/\//i.test(url)) return vuota;
                         const hdr = st.behaviorHints?.proxyHeaders?.request || st.behaviorHints?.headers || {};
                         try {
-                            const r = await fetch(url, { headers: { ...hdr, Range: 'bytes=0-1048575' }, signal: AbortSignal.timeout(3500) });
+                            const r = await fetch(url, { headers: { ...hdr, Range: 'bytes=0-1048575' }, signal: AbortSignal.timeout(3000) });
                             // 404/410 = link morto: il player resterebbe a girare a vuoto
                             if (r.status === 404 || r.status === 410) return { ...vuota, morta: true };
                             const buf = Buffer.from(await r.arrayBuffer());
@@ -7414,7 +7417,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                                 try {
                                     let lista = inizio;
                                     if (uriVar) {
-                                        const rv = await fetch(new URL(uriVar, url).toString(), { headers: hdr, signal: AbortSignal.timeout(3500) });
+                                        const rv = await fetch(new URL(uriVar, url).toString(), { headers: hdr, signal: AbortSignal.timeout(3000) });
                                         lista = (await rv.text()).slice(0, 2000000);
                                     }
                                     let durata = 0;
@@ -7443,7 +7446,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                             if (trovata) return { res: trovata, ...codecMp4(buf), peso: tot || undefined };
                             // mp4 con il moov in fondo al file (AnimeSaturn, AnimeWorld): si leggono gli ultimi 3 MB
                             if (r.status === 206 && tot > 1048576) {
-                                const r2 = await fetch(url, { headers: { ...hdr, Range: `bytes=${Math.max(0, tot - 3145728)}-${tot - 1}` }, signal: AbortSignal.timeout(3500) });
+                                const r2 = await fetch(url, { headers: { ...hdr, Range: `bytes=${Math.max(0, tot - 3145728)}-${tot - 1}` }, signal: AbortSignal.timeout(3000) });
                                 if (r2.status === 206) { const coda = Buffer.from(await r2.arrayBuffer()); return { res: cercaTkhd(coda), ...codecMp4(coda), peso: tot }; }
                             }
                         } catch {
