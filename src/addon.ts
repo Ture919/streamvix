@@ -7323,19 +7323,32 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         const x = Math.max(w, Math.round(Math.sqrt((w * h * 16) / 9)));
                         return x >= 3400 ? '2160p' : x >= 2300 ? '1440p' : x >= 1600 ? '1080p' : x >= 1100 ? '720p' : x >= 850 ? '576p' : x >= 700 ? '480p' : x > 0 ? '360p' : '';
                     };
-                    const sondaRisoluzione = async (st: any): Promise<string> => {
+                    // Codec dai codici standard (CODECS della playlist HLS o box dell'mp4): così in lista si vedono gli stessi
+                    // dati che il player mostra in riproduzione (es. H264 + AAC).
+                    const codecVideo = (s: string): string => /hvc1|hev1/i.test(s) ? 'HEVC' : /av01/i.test(s) ? 'AV1' : /avc1|avc3/i.test(s) ? 'H264' : '';
+                    const codecAudio = (s: string): string => /ec-3/i.test(s) ? 'EAC3' : /ac-3/i.test(s) ? 'AC3' : /mp4a/i.test(s) ? 'AAC' : /opus/i.test(s) ? 'OPUS' : '';
+                    type Sonda = { res: string; vc: string; ac: string; morta?: boolean };
+                    const sondaRisoluzione = async (st: any): Promise<Sonda> => {
+                        const vuota: Sonda = { res: '', vc: '', ac: '' };
                         const url = String(st?.url || '');
-                        if (!/^https?:\/\//i.test(url)) return '';
+                        if (!/^https?:\/\//i.test(url)) return vuota;
                         const hdr = st.behaviorHints?.proxyHeaders?.request || st.behaviorHints?.headers || {};
                         try {
                             const r = await fetch(url, { headers: { ...hdr, Range: 'bytes=0-1048575' }, signal: AbortSignal.timeout(3500) });
+                            // 404/410 = link morto: il player resterebbe a girare a vuoto
+                            if (r.status === 404 || r.status === 410) return { ...vuota, morta: true };
                             const buf = Buffer.from(await r.arrayBuffer());
                             const inizio = buf.subarray(0, 300000).toString('latin1');
                             if (/#EXTM3U/.test(inizio)) {
-                                let bw = 0, bh = 0;
-                                for (const m of inizio.matchAll(/RESOLUTION=(\d+)x(\d+)/g)) { const w = Number(m[1]), h = Number(m[2]); if (w > bw) { bw = w; bh = h; } }
-                                return bw ? larghezzaARis(bw, bh) : '';
+                                let bw = 0, bh = 0, codecs = '';
+                                for (const m of inizio.matchAll(/#EXT-X-STREAM-INF:([^\n]*)/g)) {
+                                    const rm = m[1].match(/RESOLUTION=(\d+)x(\d+)/); const cm = m[1].match(/CODECS="([^"]+)"/);
+                                    const w = rm ? Number(rm[1]) : 0, h = rm ? Number(rm[2]) : 0;
+                                    if (w > bw || (!bw && cm)) { bw = w; bh = h; codecs = cm ? cm[1] : codecs; }
+                                }
+                                return { res: bw ? larghezzaARis(bw, bh) : '', vc: codecVideo(codecs), ac: codecAudio(codecs) };
                             }
+                            const codecMp4 = (b: Buffer) => { const s = b.toString('latin1'); return { vc: codecVideo(s.match(/hvc1|hev1|av01|avc1|avc3/)?.[0] || ''), ac: codecAudio(s.match(/ec-3|ac-3|mp4a|[Oo]pus/)?.[0] || '') }; };
                             const cercaTkhd = (b: Buffer): string => {
                                 let i = b.indexOf('tkhd');
                                 while (i > 4) {
@@ -7350,30 +7363,52 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                                 return '';
                             };
                             const trovata = cercaTkhd(buf);
-                            if (trovata) return trovata;
+                            if (trovata) return { res: trovata, ...codecMp4(buf) };
                             // mp4 con il moov in fondo al file (AnimeSaturn, AnimeWorld): si leggono gli ultimi 3 MB
                             const tot = Number((r.headers.get('content-range') || '').split('/')[1] || 0);
                             if (r.status === 206 && tot > 1048576) {
                                 const r2 = await fetch(url, { headers: { ...hdr, Range: `bytes=${Math.max(0, tot - 3145728)}-${tot - 1}` }, signal: AbortSignal.timeout(3500) });
-                                if (r2.status === 206) return cercaTkhd(Buffer.from(await r2.arrayBuffer()));
+                                if (r2.status === 206) { const coda = Buffer.from(await r2.arrayBuffer()); return { res: cercaTkhd(coda), ...codecMp4(coda) }; }
                             }
                         } catch {
                             // fonte lenta o non leggibile: resta senza risoluzione
                         }
-                        return '';
+                        return vuota;
                     };
+                    // La sonda vale per TUTTE le fonti HTTP: quello che dichiarano titolo o nome del file (es. VixSrc "FHD",
+                    // CB01 "..._1080p.mp4") a volte non è quello che arriva al player (720p). Se la sonda risponde, vince lei.
                     await Promise.all((allStreams as any[]).map(async (st: any) => {
-                        if (!st || st.behaviorHints?.filename) return;
-                        const t = `${st.name || ''} ${st.title || ''} ${st.description || ''}`;
-                        if (/🅵🅷🅳|\bFHD\b|\b(2160|1440|1080|720|576|480)p?\b/i.test(t)) return;
-                        const ris = await sondaRisoluzione(st);
-                        if (ris) st.__risoluzioneSondata = ris;
+                        if (!st) return;
+                        const s = await sondaRisoluzione(st);
+                        if (s.res || s.vc || s.ac || s.morta) st.__sonda = s;
                     }));
+                    if (process.env.STREAMVIX_SHOW_DEAD !== '1') {
+                        for (let i = allStreams.length - 1; i >= 0; i--) {
+                            const st: any = (allStreams as any[])[i];
+                            if (st?.__sonda?.morta) { console.log('[Sonda] link morto (404) tolto:', String(st.name || '').replace(/\s+/g, ' ').slice(0, 60)); allStreams.splice(i, 1); }
+                        }
+                    }
+                    const RIS_RE = /(?<![0-9])(2160|1440|1080|720|576|480)[pi](?![a-z0-9])/ig;
+                    for (const st of allStreams as any[]) {
+                        if (!st || !st.behaviorHints?.filename) continue;
+                        const s: Sonda | undefined = st.__sonda;
+                        delete st.__sonda;
+                        if (!s) continue;
+                        let fn = String(st.behaviorHints.filename);
+                        const ext = (fn.match(/\.(mkv|mp4|avi|ts|m3u8)$/i) || [''])[0];
+                        if (ext) fn = fn.slice(0, -ext.length);
+                        if (s.res) fn = RIS_RE.test(fn) ? fn.replace(RIS_RE, s.res) : `${fn}.${s.res}`;
+                        RIS_RE.lastIndex = 0;
+                        if (s.vc && !/\b(h\.?264|x264|avc|h\.?265|x265|hevc|av1)\b/i.test(fn)) fn += `.${s.vc}`;
+                        if (s.ac && !/\b(aac|e?ac-?3|dd\+?|ddp|opus|dts|truehd)\b/i.test(fn)) fn += `.${s.ac}`;
+                        st.behaviorHints = { ...st.behaviorHints, filename: fn + ext };
+                    }
                     for (const st of allStreams as any[]) {
                         if (!st || st.behaviorHints?.filename) continue;
+                        const s: Sonda = st.__sonda || { res: '', vc: '', ac: '' };
+                        delete st.__sonda;
                         const testo = `${st.name || ''} ${st.title || ''} ${st.description || ''}`;
-                        const res = /🅵🅷🅳|\bFHD\b|\b1080p?\b/i.test(testo) ? '1080p' : (/\b720p?\b/i.test(testo) ? '720p' : (st.__risoluzioneSondata || ''));
-                        delete st.__risoluzioneSondata;
+                        const res = s.res || (/🅵🅷🅳|\bFHD\b|\b1080p?\b/i.test(testo) ? '1080p' : (/\b720p?\b/i.test(testo) ? '720p' : ''));
                         const lingue: string[] = [];
                         if (/🇮🇹|\[ITA\]|\bITA\b/.test(testo)) lingue.push('ITA');
                         if (/🇬🇧|\bENG\b/.test(testo)) lingue.push('ENG');
@@ -7382,8 +7417,16 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         const riga = String(st.title || st.description || '').split('\n')[0].replace(/🎬/g, '')
                             .replace(/\(S\d+E\d+\)|▪.*$|\(Srv\d+\)/g, '').replace(/^\s*ToonItalia\s*-\s*/i, '');
                         let base = pulisciTitolo(riga);
+                        // il titolo di alcune fonti è il nome del file (CB01: "..._Bluray_1080p.mp4"): via estensione e, se la sonda
+                        // ha risposto, anche risoluzione e codec dichiarati, che possono essere falsi
+                        base = base.replace(/\.(mkv|mp4|avi|m3u8)(?=\.|$)/ig, '');
+                        if (s.res) base = base.replace(RIS_RE, '');
+                        RIS_RE.lastIndex = 0;
+                        if (s.vc) base = base.replace(/(^|\.)(h\.?264|x264|avc|h\.?265|x265|hevc)(?=\.|$)/ig, '$1');
+                        if (s.ac) base = base.replace(/(^|\.)(aac|e?ac3|dd\+?|ddp|dts)(?=\.|$)/ig, '$1');
+                        base = base.replace(/\.{2,}/g, '.').replace(/^\.|\.$/g, '');
                         if (generico(base)) base = titoloVero;
-                        const nome = [base ? base + ep : ep.replace(/^\./, ''), res, ...lingue].filter(Boolean).join('.');
+                        const nome = [base ? base + ep : ep.replace(/^\./, ''), res, s.vc, s.ac, ...lingue].filter(Boolean).join('.');
                         st.behaviorHints = { ...(st.behaviorHints || {}), filename: nome };
                     }
                 }
