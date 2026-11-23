@@ -7333,6 +7333,15 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     }
                 }
 
+                // Fork Ture919 (23/11/2026): DeltaBit via EasyProxy oggi restituisce una pagina HTML invece del video: nascosto
+                // (STREAMVIX_SHOW_DELTABIT=1 per rimostrarlo quando l'estrattore funziona).
+                if (process.env.STREAMVIX_SHOW_DELTABIT !== '1') {
+                    for (let i = allStreams.length - 1; i >= 0; i--) {
+                        const t = `${(allStreams as any[])[i]?.title || ''} ${(allStreams as any[])[i]?.name || ''}`;
+                        if (/deltabit/i.test(t)) allStreams.splice(i, 1);
+                    }
+                }
+
                 console.log(`✅ Total streams returned: ${allStreams.length}`);
                 // Cache the fan-out result for repeat plays. Only the
                 // imdb/tmdb/kitsu/mal id branch reaches here with a non-empty

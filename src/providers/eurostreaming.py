@@ -802,11 +802,64 @@ async def _search_post_ids(client, showname, headers):
         log('search: wp-json search exception, falling back to HTML search', e)
 
     q_html = urllib.parse.quote_plus(showname.replace('+', ' '))
-    response = await _cf_safe_get(client, f"{ES_DOMAIN}/?s={q_html}", headers=headers)
     ids = []
-    for post_id in _HTML_SEARCH_RESULT_RE.findall(response.text):
-        if int(post_id) not in ids:
-            ids.append(int(post_id))
+    try:
+        response = await _cf_safe_get(client, f"{ES_DOMAIN}/?s={q_html}", headers=headers)
+        for post_id in _HTML_SEARCH_RESULT_RE.findall(response.text):
+            if int(post_id) not in ids:
+                ids.append(int(post_id))
+    except Exception as e:
+        log('search: HTML search exception', e)
+    if ids:
+        return [{'id': post_id} for post_id in ids[:10]]
+    # Nov 2026: Cloudflare risponde 403 anche alla ricerca HTML (/?s=), mentre
+    # l'elenco REST dei post e dei tag funziona. Cerchiamo per slug.
+    log('search: HTML search blocked/empty, trying REST slug/tag lookup')
+    return await _slug_post_ids(client, showname, headers)
+
+
+def _es_slugify(title: str) -> str:
+    t = unicodedata.normalize('NFD', title or '')
+    t = ''.join(c for c in t if unicodedata.category(c) != 'Mn').lower()
+    t = re.sub(r"['’]", '', t)
+    return re.sub(r'[^a-z0-9]+', '-', t).strip('-')
+
+
+async def _slug_post_ids(client, showname, headers):
+    """Post id per slug, senza endpoint di ricerca.
+
+    1) /wp-json/wp/v2/posts?slug=<s>,<s>-1,...,<s>-40 : WordPress aggiunge -N agli
+       slug ripetuti (es. the-penguin-3, slow-horses-10); una sola richiesta.
+    2) /wp-json/wp/v2/tags?slug=<s> -> /wp-json/wp/v2/posts?tags=<id> : il tag col
+       nome della serie raccoglie anche spin-off (filtrati poi dal title match).
+    Verificato il 23/11/2026 su eurostreamings.cyou (Mercoledi', The Penguin,
+    Slow Horses, Squid Game, Stranger Things, La casa di carta).
+    """
+    base = _es_slugify(showname.replace('+', ' '))
+    if not base:
+        return []
+    ids = []
+    try:
+        slugs = ','.join([base] + [f'{base}-{i}' for i in range(1, 41)])
+        r = await _cf_safe_get(client, f"{ES_DOMAIN}/wp-json/wp/v2/posts?per_page=100&_fields=id&slug={slugs}", headers=headers)
+        if 'json' in r.headers.get('content-type', '').lower():
+            for p in r.json() or []:
+                if isinstance(p, dict) and p.get('id') and p['id'] not in ids:
+                    ids.append(p['id'])
+    except Exception as e:
+        log('search: slug lookup exception', e)
+    try:
+        r = await _cf_safe_get(client, f"{ES_DOMAIN}/wp-json/wp/v2/tags?_fields=id&slug={base}", headers=headers)
+        tags = r.json() if 'json' in r.headers.get('content-type', '').lower() else []
+        if isinstance(tags, list) and tags and tags[0].get('id'):
+            r2 = await _cf_safe_get(client, f"{ES_DOMAIN}/wp-json/wp/v2/posts?per_page=20&_fields=id&tags={tags[0]['id']}", headers=headers)
+            if 'json' in r2.headers.get('content-type', '').lower():
+                for p in r2.json() or []:
+                    if isinstance(p, dict) and p.get('id') and p['id'] not in ids:
+                        ids.append(p['id'])
+    except Exception as e:
+        log('search: tag lookup exception', e)
+    log('search: slug/tag ids', ids)
     return [{'id': post_id} for post_id in ids[:10]]
 
 #############################################

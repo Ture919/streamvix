@@ -617,8 +617,16 @@ def resolve_uprot_fast(url):
       curl_cffi + impersonate='chrome' fa passare il bot-check di Cloudflare,
       quindi uprot serve direttamente la pagina con il link maxstream/clicka.
     * Path con 'mse'/'msei'/'msdi': GET semplice (stesso meccanismo).
+
+    Nov 2026: /msei/ (i link "Maxstream" di CB01 dietro stayonline) serve
+    direttamente il bottone Continue -> maxstream.video/uprotem/... -> 302 alla
+    pagina player, SENZA captcha. Prima veniva trasformato in /msfi/ + POST con
+    lo state del warmup: senza state (warmup OCR rotto dal nuovo captcha a
+    immagini) ogni link CB01 finiva in errore. Ora /msei/ va in GET semplice.
+    /mse/ invece mostra il captcha a immagini ("Seleziona tutte le immagini con
+    ..."): il trucco msf->mse non funziona piu' e torna captcha_required.
     """
-    is_msfi = bool(re.search(r'/(?:msfi|msei)/', url, re.I))
+    is_msfi = bool(re.search(r'/msfi/', url, re.I))
     target_url = url
     method = 'GET'
     body = None
@@ -630,9 +638,6 @@ def resolve_uprot_fast(url):
         state = _uprot_state_load()
         if not state:
             return {'ok': False, 'error': 'no warmup state (uprot_state.json missing) — run warmup first'}
-        # Normalizza msei -> msfi (MammaMia fa l'analogo mse->msf prima del POST).
-        if '/msei/' in target_url:
-            target_url = target_url.replace('/msei/', '/msfi/')
         method = 'POST'
         post_data = urllib.parse.urlencode(state['data'])
         body = post_data

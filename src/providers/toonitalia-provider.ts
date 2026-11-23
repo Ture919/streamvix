@@ -62,7 +62,7 @@ function getMediaFlowConfig(config?: { mfpUrl?: string; mfpPsw?: string }) {
 /**
  * Ottiene il titolo e il numero di stagioni della serie da TMDb usando IMDb ID o TMDb ID
  */
-async function getSeriesInfoFromTMDb(imdbId?: string, tmdbId?: string, tmdbApiKey?: string): Promise<{ title: string; seasonCount: number } | null> {
+async function getSeriesInfoFromTMDb(imdbId?: string, tmdbId?: string, tmdbApiKey?: string): Promise<{ title: string; seasonCount: number; isAnimation: boolean } | null> {
     try {
         const apiKey = tmdbApiKey || process.env.TMDB_API_KEY || '40a9faa1f6741afb2c0c40238d85f8d0';
         let url: string;
@@ -84,8 +84,9 @@ async function getSeriesInfoFromTMDb(imdbId?: string, tmdbId?: string, tmdbApiKe
             // Risposta diretta da /tv/{id}
             const title = response.data.name || response.data.original_name;
             const seasonCount = response.data.number_of_seasons || 1;
-            console.log(`[ToonItalia] TMDb info: "${title}" has ${seasonCount} season(s)`);
-            return title ? { title, seasonCount } : null;
+            const isAnimation = (response.data.genres || []).some((g: any) => [16, 10762].includes(Number(g?.id)));
+            console.log(`[ToonItalia] TMDb info: "${title}" has ${seasonCount} season(s), animazione=${isAnimation}`);
+            return title ? { title, seasonCount, isAnimation } : null;
         } else {
             // Risposta da /find
             const results = response.data.tv_results || [];
@@ -96,8 +97,9 @@ async function getSeriesInfoFromTMDb(imdbId?: string, tmdbId?: string, tmdbApiKe
                 const detailUrl = `https://api.themoviedb.org/3/tv/${tvId}?api_key=${apiKey}&language=it-IT`;
                 const detailResponse = await axios.get(detailUrl, { timeout: 5000 });
                 const seasonCount = detailResponse.data.number_of_seasons || 1;
-                console.log(`[ToonItalia] TMDb info: "${title}" has ${seasonCount} season(s)`);
-                return title ? { title, seasonCount } : null;
+                const isAnimation = (detailResponse.data.genres || []).some((g: any) => [16, 10762].includes(Number(g?.id)));
+                console.log(`[ToonItalia] TMDb info: "${title}" has ${seasonCount} season(s), animazione=${isAnimation}`);
+                return title ? { title, seasonCount, isAnimation } : null;
             }
         }
 
@@ -583,6 +585,11 @@ export async function toonitalia(req: StreamRequest): Promise<Stream[]> {
                     console.log('[ToonItalia] Could not fetch title from TMDb');
                     return streams;
                 }
+                // Fork Ture919: Toonitalia è un sito di cartoni/anime e passa da FlareSolverr (lento): solo per animazione/kids (TMDB 16, 10762)
+                if (!seriesInfo.isAnimation && process.env.TOONITALIA_ALL_GENRES !== '1') {
+                    console.log(`[ToonItalia] "${seriesInfo.title}" non è animazione: salto`);
+                    return [];
+                }
                 seriesName = seriesInfo.title;
                 tmdbSeasonCount = seriesInfo.seasonCount;
                 console.log(`[ToonItalia] Got series from TMDb: "${seriesName}" (${tmdbSeasonCount} seasons)`);
@@ -619,6 +626,11 @@ export async function toonitalia(req: StreamRequest): Promise<Stream[]> {
                 if (!seriesInfo) {
                     console.log('[ToonItalia] Could not fetch title from TMDb');
                     return streams;
+                }
+                // Fork Ture919: Toonitalia è un sito di cartoni/anime e passa da FlareSolverr (lento): solo per animazione/kids (TMDB 16, 10762)
+                if (!seriesInfo.isAnimation && process.env.TOONITALIA_ALL_GENRES !== '1') {
+                    console.log(`[ToonItalia] "${seriesInfo.title}" non è animazione: salto`);
+                    return [];
                 }
                 seriesName = seriesInfo.title;
                 tmdbSeasonCount = seriesInfo.seasonCount;

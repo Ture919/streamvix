@@ -16,6 +16,7 @@ thanks to @urlomythus for the code https://github.com/UrloMythus/MammaMia/blob/m
 import type { StreamForStremio } from '../types/animeunity';
 import axios from 'axios';
 import * as https from 'https';
+import { isMixdropUrl, mixdropAlive } from '../utils/mixdropCheck';
 
 // Dynamic require per proxy agent
 const HttpsProxyAgent = require('https-proxy-agent').HttpsProxyAgent;
@@ -261,15 +262,47 @@ export class Cb01Provider {
         return result;
     }
 
-    private pickYearMatch(html: string, expectedYear: string | null): string | null { // returns href
-        const divRe = /<div[^>]+class="card-content"[\s\S]*?<h3[^>]*class="card-title"[\s\S]*?<a[^>]+href="([^"]+)"/gi;
-        let m: RegExpExecArray | null; const yearRe = /(19|20)\d{2}/; let first: string | null = null;
+    // Titolo senza tag, entita', etichette [HD]/[Sub-ITA], "(anno)", accenti e punteggiatura.
+    private normTitle(s: string): string {
+        return String(s || '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&#?\w+;/g, ' ')
+            .replace(/\[[^\]]*\]/g, ' ')
+            .replace(/\((?:19|20)\d{2}\)/g, ' ')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    // Prima il risultato era "anno nello slug, altrimenti il PRIMO risultato": cercando
+    // "Il re leone" con l'anno sbagliato usciva "Mufasa: Il re leone". Ora il titolo deve
+    // coincidere (o contenere tutte le parole cercate, se sono almeno due) e l'anno, se
+    // noto, non puo' differire di piu' di 1. Nessuna corrispondenza = nessun risultato.
+    private pickYearMatch(html: string, expectedYear: string | null, wantedTitle?: string): string | null { // returns href
+        const divRe = /<div[^>]+class="card-content"[\s\S]*?<h3[^>]*class="card-title"[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+        const want = wantedTitle ? this.normTitle(wantedTitle) : '';
+        const wantWords = want ? want.split(' ') : [];
+        let best: { href: string; score: number } | null = null;
+        let m: RegExpExecArray | null;
         while ((m = divRe.exec(html))) {
-            const href = m[1]; if (!first) first = href;
-            const slug = href.split('/').filter(Boolean).pop() || '';
-            const ym = slug.match(yearRe); if (ym && expectedYear && ym[0] === expectedYear) return href;
+            const href = m[1];
+            const text = m[2];
+            const ym = (text.match(/\(((?:19|20)\d{2})\)/) || href.match(/-((?:19|20)\d{2})\/?$/) || [])[1] || null;
+            if (expectedYear && ym && Math.abs(parseInt(ym, 10) - parseInt(expectedYear, 10)) > 1) continue;
+            let score = 50;
+            if (want) {
+                const got = this.normTitle(text);
+                if (got === want) score = 100;
+                else {
+                    const gotWords = got.split(' ');
+                    const missing = wantWords.filter(w => !gotWords.includes(w)).length;
+                    if (missing > 0 || wantWords.length < 2) continue;
+                    score = 60 - (gotWords.length - wantWords.length);
+                }
+            }
+            if (expectedYear && ym === expectedYear) score += 10;
+            if (!best || score > best.score) best = { href, score };
         }
-        return first;
+        return best ? best.href : null;
     }
 
     private async movieFlow(imdbId: string): Promise<FlowResult[] | null> {
@@ -278,7 +311,7 @@ export class Cb01Provider {
         const q = this.norm(title);
         const searchUrl = `${this.baseFilm}/?s=${encodeURIComponent(q)}`;
         let searchHtml: string; try { searchHtml = await this.fetch(searchUrl); } catch (e) { warn('movie search fetch fail', searchUrl, String(e)); return null; }
-        const movieHref = this.pickYearMatch(searchHtml, year);
+        const movieHref = this.pickYearMatch(searchHtml, year, meta.source === 'imdb-id' ? undefined : title);
         if (!movieHref) { log('movie no match', { imdbId, title }); return null; }
         let pageHtml: string; try { pageHtml = await this.fetch(movieHref, this.baseFilm + '/'); } catch (e) { warn('movie page fetch fail', movieHref, String(e)); return null; }
         // Raccogli sia iframen2 (Streaming HD / Mixdrop) sia iframen1 (Maxstream) come
@@ -310,6 +343,8 @@ export class Cb01Provider {
             }
             const resolved = await this.resolveToMixdrop(candidate, pageHtml);
             if (!resolved) { log('movie resolveToMixdrop failed', { imdbId, candidate }); continue; }
+            // iframen1/2 (/e/<id>) e le tabelle (/l/<id>) portano spesso allo stesso link.
+            if (results.some(r => r.mixdropUrl === resolved)) { log('movie duplicate link skipped', { resolved }); continue; }
             results.push({ mixdropUrl: resolved, meta: stayMeta || { file: null, size: null }, title });
         }
         return results.length ? results : null;
@@ -512,6 +547,7 @@ export class Cb01Provider {
             }
             const resolved = await this.resolveToMixdrop(candidate, pageHtml);
             if (!resolved) { log('series resolveToMixdrop failed', { imdbId, candidate }); continue; }
+            if (results.some(r => r.mixdropUrl === resolved)) { log('series duplicate link skipped', { resolved }); continue; }
             results.push({ mixdropUrl: resolved, meta: stayMeta || { file: null, size: null }, title });
         }
         return results.length ? results : null;
@@ -670,6 +706,12 @@ export class Cb01Provider {
             }
         } else {
             // Mixdrop / generic: canonical /e/{id}/ then proxy/stream auto-extract
+            // File cancellato su MixDrop ("WE ARE SORRY") = il proxy risponde 404
+            // "Video source not found": non proporre lo stream.
+            if (isMixdropUrl(originalEmbed) && await mixdropAlive(originalEmbed) === false) {
+                log('mixdrop file removed -> skip stream', { embed: originalEmbed });
+                return null;
+            }
             let dUrl = originalEmbed;
             const idMatch = originalEmbed.match(/^(https?:\/\/[^/]+)\/e\/([A-Za-z0-9]+)/);
             if (idMatch) {

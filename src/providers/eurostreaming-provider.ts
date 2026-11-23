@@ -49,6 +49,7 @@ function resolvePython(): string {
 }
 import type { StreamForStremio } from '../types/animeunity';
 import { resolveShortener, triggerWarmupAsync } from '../utils/shortenerResolver';
+import { isMixdropUrl, mixdropAlive } from '../utils/mixdropCheck';
 
 export interface EurostreamingConfig { enabled: boolean; mfpUrl?: string; mfpPassword?: string; tmdbApiKey?: string; useMediaFlow?: boolean; }
 
@@ -256,12 +257,18 @@ export class EurostreamingProvider {
       try {
         const uObj = new URL(s.url);
         const h = uObj.host.toLowerCase();
-        if (h.includes('mixdrop')) {
+        // Gli alias MixDrop non contengono sempre "mixdrop" (m1xdrop.net, mxdrop.click):
+        // prima finivano nell'ultimo ramo e uscivano come pagina HTML grezza.
+        if (h.includes('mixdrop') || isMixdropUrl(s.url)) {
           playerName = 'Mixdrop';
           // Mixdrop funziona SOLO via proxy (EP /proxy/stream o MFP extractor).
           // Senza mfpUrl configurato l'URL grezzo non e' riproducibile -> skip.
           if (!this.config.mfpUrl) {
             console.log('[Eurostreaming] mixdrop skip (no proxy configurato)');
+            continue;
+          }
+          if (await mixdropAlive(s.url) === false) {
+            console.log('[Eurostreaming] mixdrop file rimosso -> skip', s.url.substring(0, 80));
             continue;
           }
           const base = this.config.mfpUrl.replace(/\/$/, '');

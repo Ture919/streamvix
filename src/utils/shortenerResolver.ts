@@ -161,6 +161,9 @@ function _isStateFresh(p: string): boolean {
 }
 
 function _stateForUrl(url: string): string | null {
+  // /msei/ non chiede captcha (bottone Continue diretto, verificato 23/11/2026):
+  // non serve lo state del warmup, quindi niente pre-check.
+  if (/uprot\.net\/msei\//i.test(url)) return null;
   if (/uprot\.net\//i.test(url)) return UPROT_STATE_PATH;
   if (/clicka\.cc\/|safego\.cc\/|deltabit\.co\//i.test(url)) return CLICKA_STATE_PATH;
   return null;
@@ -282,7 +285,10 @@ async function runWarmupTick(): Promise<void> {
     // Sceglie i domini scaduti. Se ce ne sono piu' di uno scaduto, li lancia
     // in sequenza (no parallel: rispetta il lock e gli IP del proxy).
     const due: DomainKey[] = [];
-    if (now >= nextRetry.uprot) due.push('uprot');
+    // uprot ora usa un captcha a immagini ("Seleziona tutte le immagini con
+    // <oggetto>"): l'OCR numerico non puo' risolverlo e ogni giro manda 10
+    // risposte sbagliate a uprot. Warmup uprot solo su richiesta esplicita.
+    if (process.env.STREAMVIX_UPROT_WARMUP === '1' && now >= nextRetry.uprot) due.push('uprot');
     if (now >= nextRetry.clicka) due.push('clicka');
     for (const dom of due) {
       await _warmupDomain(dom);
