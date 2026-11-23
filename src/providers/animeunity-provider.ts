@@ -907,6 +907,14 @@ export class AnimeUnityProvider {
         animeUrl,
         baseTitle
       );
+      // Nome file "parlante": AIOStreams ricava la lingua dal filename e i link EasyProxy (manifest.m3u8) non ne hanno uno.
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const titoloFile = String(displayTitle).normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^A-Za-z0-9 ]+/g, ' ').trim().replace(/\s+/g, '.');
+      const fileName = `${titoloFile}${isMovie ? '' : `.S${pad(sNum)}E${pad(epNum)}`}.${langLabel === 'ITA' ? 'ITA' : 'JPN.SUB.ITA'}`;
+      for (const st of built) {
+        (st as any).behaviorHints = { ...((st as any).behaviorHints || {}), filename: fileName };
+      }
       out.push(...built);
     }
     console.log(`[AnimeUnity] Sito nuovo: anime ${animeId} ep ${epNum}, ${videos.length} versioni, ${out.length} stream`);
