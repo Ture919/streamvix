@@ -13,6 +13,7 @@ declare function require(name: string): any;
 const cheerio = require('cheerio');
 import { fetchPage, fetchPageWithProxies } from './flaresolverr';
 import { getTmdbIdFromImdbId } from '../extractor';
+import { getDomain } from '../utils/domains';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -58,7 +59,10 @@ function purgeOldEmbeds(cache: EmbedCache, ttl: number) {
 }
 
 export class GuardaHdProvider {
-    private readonly base = 'https://mostraguarda.stream';
+    // Dominio da config/domains.json (chiave 'guardahd'), non piu' scritto nel codice.
+    // 23/11/2026: mostraguarda.stream non ha piu' record A (NS Cloudflare, nessun IP) e
+    // guardahd.stream e' una pagina di parcheggio Namecheap: va aggiornato solo domains.json.
+    private get base(): string { return `https://${getDomain('guardahd') || 'mostraguarda.stream'}`; }
     private readonly CACHE_TTL = 12 * 60 * 60 * 1000; // 12h
 
     constructor(private config: GuardaHdConfig) { }
@@ -92,6 +96,10 @@ export class GuardaHdProvider {
             } catch (e: any) {
                 const msg = (e?.message || '').toString();
                 console.log('[GH][ERR] fetch movie page failed', msg);
+                if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(msg) || /ENOTFOUND|EAI_AGAIN/.test(String(e?.cause?.code || e?.code || ''))) {
+                    console.log(`[GH][DNS] ${this.base} non risolve: dominio morto, aggiornare 'guardahd' in config/domains.json`);
+                    return { streams: [] };
+                }
                 if (/^(cloudflare_challenge|http_403|blocked)/.test(msg)) {
                     try {
                         console.log('[GH][PROXY] proxy attempts (max 2)');

@@ -3,11 +3,11 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
-import * as crypto from 'crypto';
 import { Stream } from 'stremio-addon-sdk';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { buildUnifiedStreamName, providerLabel } from '../utils/unifiedNames';
 import { getDomain } from '../utils/domains';
+import { resolveGuardoPlayer, wrapWithMfp, normalizeIframeSrc, scoreTitle, HostResult } from './guardo-hosts';
 
 // Config constants - dynamic domain from domains.json
 const getTargetDomain = () => `https://${getDomain('guardoserie') || 'guardoserie.digital'}`;
@@ -57,9 +57,10 @@ async function fetchWithBypass(url: string, options: any = {}): Promise<any> {
 
     try {
         // 1. Try direct fetch (Fastest)
-        return await getClient().get(url, { 
-            ...options, 
-            timeout: 1000 
+        return await getClient().get(url, {
+            ...options,
+            // 1 s era meno del tempo di risposta reale (~1-1,5 s, misurato 23/11/2026)
+            timeout: parseInt(process.env.GUARDOSERIE_TIMEOUT_MS || '8000', 10)
         });
     } catch (e: any) {
         if (e.response?.status === 403 || e.response?.status === 400 || !e.response || e.code === 'ECONNABORTED' || e.message === 'timeout exceeded') {
@@ -135,89 +136,33 @@ function buildUrlWithParams(url: string, params: any): string {
     }
 }
 
-// --- LOADM EXTRACTOR ---
-const KEY = Buffer.from('kiemtienmua911ca', 'utf-8');
-const IV = Buffer.from('1234567890oiuytr', 'utf-8');
+// --- PLAYER -> STREAM (Uqload, LoadM: vedi guardo-hosts.ts) ---
 
-async function extractLoadM(playerUrl: string, referer: string, mfpUrl?: string, mfpPsw?: string, isSub: boolean = false): Promise<Stream | null> {
-    try {
-        const parts = playerUrl.split('#');
-        const id = parts[1];
-        const playerDomain = new URL(playerUrl).origin;
-        const apiUrl = `${playerDomain}/api/v1/video`;
-
-        const response = await fetchWithBypass(apiUrl, {
-            headers: { 'Referer': playerUrl },
-            params: { id, w: '2560', h: '1440', r: referer },
-            responseType: 'text'
-        });
-
-        const hexData = response.data;
-        const cleanHex = hexData.replace(/[^0-9a-fA-F]/g, '');
-        if (!cleanHex || cleanHex.length === 0) return null;
-
-        const encryptedBytes = Buffer.from(cleanHex, 'hex');
-        const decipher = crypto.createDecipheriv('aes-128-cbc', KEY, IV);
-        decipher.setAutoPadding(false);
-
-        let decrypted = Buffer.concat([decipher.update(encryptedBytes), decipher.final()]);
-        const padLen = decrypted[decrypted.length - 1];
-        if (padLen >= 1 && padLen <= 16) {
-            decrypted = decrypted.subarray(0, decrypted.length - padLen);
-        }
-
-        const jsonStr = decrypted.toString('utf-8');
-        const data = JSON.parse(jsonStr);
-        const hls = data['cf'];
-        const title = data['title'] || 'Stream';
-
-        if (hls) {
-            let finalUrl = hls;
-
-            if (mfpUrl) {
-                const proxyUrl = `${mfpUrl.replace(/\/+$/, '')}/proxy/hls/manifest.m3u8`;
-                const params = new URLSearchParams();
-                params.append('d', hls);
-                if (mfpPsw) params.append('api_password', mfpPsw);
-                params.append('h_Referer', playerUrl);
-                params.append('h_Origin', playerDomain);
-                params.append('h_User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
-                finalUrl = `${proxyUrl}?${params.toString()}`;
-            }
-
-            return {
-                name: providerLabel('guardoserie'),
-                title: buildUnifiedStreamName({
-                    baseTitle: title,
-                    isSub: isSub,
-                    proxyOn: !!mfpUrl,
-                    provider: 'guardoserie',
-                    playerName: 'LoadM',
-                    hideProviderInTitle: true
-                }),
-                url: finalUrl,
-                behaviorHints: {
-                    notWebReady: true,
-                    proxyHeaders: {
-                        request: {
-                            "Referer": playerUrl,
-                            "Origin": playerDomain,
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                        }
-                    }
-                }
-            };
-        }
-    } catch (e) {
-        console.error(`[Guardoserie] LoadM extraction failed: ${e}`);
-    }
-    return null;
+function buildGuardoserieStream(res: HostResult, isSub: boolean, mfpUrl?: string, mfpPsw?: string): Stream {
+    const viaMfp = !!mfpUrl && res.hls;
+    return {
+        name: providerLabel('guardoserie'),
+        title: buildUnifiedStreamName({
+            baseTitle: res.player,
+            isSub,
+            proxyOn: viaMfp,
+            provider: 'guardoserie',
+            playerName: res.player,
+            hideProviderInTitle: true
+        }),
+        url: wrapWithMfp(res, mfpUrl, mfpPsw),
+        behaviorHints: {
+            notWebReady: true,
+            ...(viaMfp ? {} : { proxyHeaders: { request: res.headers } })
+        } as any
+    };
 }
 
 // --- SEARCH & SCRAPE ---
 
 async function getGuardoserieStreamsCore(type: string, id: string, tmdbApiKey?: string, mfpUrl?: string, mfpPsw?: string): Promise<Stream[]> {
-    if (type !== 'series') return [];
+    if (type !== 'series' && type !== 'movie') return [];
+    const isMovie = type === 'movie';
 
     console.log(`[Guardoserie] Requesting: ${id} (${type})`);
 
@@ -254,7 +199,9 @@ async function getGuardoserieStreamsCore(type: string, id: string, tmdbApiKey?: 
         return [];
     }
 
-    const seriesUrl = await searchGuardoserie(name, year);
+    const engMetaEarly = await getCinemetaMeta(type, imdbId);
+    const titles = [name, engMetaEarly?.name || ''].filter(Boolean);
+    const seriesUrl = await searchGuardoserie(name, year, isMovie, titles);
     if (!seriesUrl) {
         console.log(`[Guardoserie] Not found on site (IT): ${name}`);
 
@@ -262,7 +209,7 @@ async function getGuardoserieStreamsCore(type: string, id: string, tmdbApiKey?: 
             const engMeta = await getCinemetaMeta(type, imdbId);
             if (engMeta && engMeta.name !== name) {
                 console.log(`[Guardoserie] Trying fallback with English title: ${engMeta.name}`);
-                const engUrl = await searchGuardoserie(engMeta.name, year);
+                const engUrl = await searchGuardoserie(engMeta.name, year, isMovie, titles);
                 if (engUrl) {
                     console.log(`✅ [Guardoserie] Found with English title!`);
                     const targetUrl = type === 'series'
@@ -292,41 +239,37 @@ export async function getGuardoserieStreams(type: string, id: string, tmdbApiKey
     return await getGuardoserieStreamsCore(type, id, tmdbApiKey, mfpUrl, mfpPsw);
 }
 
-async function searchGuardoserie(query: string, year: string): Promise<string | null> {
+async function searchGuardoserie(query: string, year: string, isMovie: boolean, titles: string[] = []): Promise<string | null> {
     try {
-        const searchUrl = `${getTargetDomain()}/?s=${encodeURIComponent(query)}`;
+        const base = getTargetDomain();
+        const searchUrl = `${base}/?s=${encodeURIComponent(query)}`;
         console.log('[Guardoserie] Direct search:', searchUrl);
 
         const res = await fetchWithBypass(searchUrl);
         const $ = cheerio.load(res.data);
+        const wantYear = parseInt(year, 10) || 0;
+        const wanted = titles.length ? titles : [query];
 
-        const queryLower = query.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-        const allLinks: { href: string, text: string }[] = [];
-        $('a[href*="/serie/"]').each((_, el) => {
-            const href = $(el).attr('href');
-            if (!href || href === '#') return;
-            if (/\/serie\/?$/.test(href)) return;
-            if (!/\/serie\/[a-z0-9-]+/i.test(href)) return;
-
-            const text = $(el).text().trim();
-            allLinks.push({ href: href.startsWith('http') ? href : `${getTargetDomain()}${href}`, text });
+        let best: { href: string, score: number } | null = null;
+        $('.ml-item').each((_, el) => {
+            const a = $(el).find('a[href]').first();
+            const href = a.attr('href') || '';
+            if (!href.startsWith(base)) return;
+            const path = href.slice(base.length).split('/').filter(Boolean);
+            const isSerie = path[0] === 'serie' && path.length === 2;
+            const isFilm = path.length === 1 && path[0] !== 'serie' && path[0] !== 'episodio';
+            if (isMovie ? !isFilm : !isSerie) return;
+            const title = a.attr('oldtitle') || $(el).find('h2').first().text() || '';
+            const yHit = ($(el).html() || '').match(/release-year\/(\d{4})/);
+            const score = scoreTitle(title, yHit ? parseInt(yHit[1], 10) : 0, wanted, wantYear);
+            if (!best || score > best.score) best = { href, score };
         });
-
-        for (const { href, text } of allLinks) {
-            const textLower = text.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const hrefLower = href.toLowerCase();
-
-            if (textLower.includes(queryLower) || hrefLower.includes(queryLower)) {
-                if (year && (text.includes(year) || href.includes(year))) {
-                    return href;
-                } else if (!year) {
-                    return href;
-                }
-            }
+        const chosen = best as { href: string, score: number } | null;
+        if (chosen && chosen.score >= 5) {
+            console.log(`[Guardoserie] Match ${chosen.href} (score ${chosen.score})`);
+            return chosen.href;
         }
-
-        if (allLinks.length > 0) return allLinks[0].href;
+        console.log(`[Guardoserie] Nessun risultato affidabile per "${query}" (miglior score ${chosen ? chosen.score : 'n/d'})`);
     } catch (e) {
         console.error(`[Guardoserie] Search failed: ${e}`);
     }
@@ -334,6 +277,14 @@ async function searchGuardoserie(query: string, year: string): Promise<string | 
 }
 
 async function getEpisodeLink(seriesUrl: string, season: number, episode: number): Promise<string | null> {
+    const slug = (seriesUrl.match(/\/serie\/([^/]+)/) || [])[1];
+    if (slug) {
+        const direct = `${getTargetDomain()}/episodio/${slug}-stagione-${season}-episodio-${episode}/`;
+        try {
+            const r = await fetchWithBypass(direct);
+            if (r.status === 200 && /id="player2"|<iframe/i.test(String(r.data))) return direct;
+        } catch { /* fallback sotto */ }
+    }
     try {
         const res = await fetchWithBypass(seriesUrl);
         const $ = cheerio.load(res.data);
@@ -356,49 +307,38 @@ async function resolvePageStream(pageUrl: string, mfpUrl?: string, mfpPsw?: stri
     try {
         const res = await fetchWithBypass(pageUrl);
         const $ = cheerio.load(res.data);
+        const siteHost = new URL(getTargetDomain()).hostname;
 
         const tabLangMap: Record<string, 'ITA' | 'SUB'> = {};
-        $('.idTabs .les-content a, .player_nav .les-content a').each((_, el) => {
-            const href = $(el).attr('href');
+        $('a[href^="#tab"]').each((_, el) => {
+            const href = $(el).attr('href') || '';
             const text = $(el).text().toLowerCase();
-            if (href && href.startsWith('#tab')) {
-                const tabId = href.substring(1);
-                if (text.includes('sub')) tabLangMap[tabId] = 'SUB';
-                else if (text.includes('ita')) tabLangMap[tabId] = 'ITA';
-            }
+            const tabId = href.substring(1);
+            if (text.includes('sub')) tabLangMap[tabId] = 'SUB';
+            else if (text.includes('ita')) tabLangMap[tabId] = 'ITA';
         });
 
-        const tabDivs = $('#player2 > div[id^="tab"]');
-        for (const tabDiv of tabDivs) {
-            const tabId = $(tabDiv).attr('id') || '';
-            const lang = tabLangMap[tabId] || 'ITA';
-            const isSub = lang === 'SUB';
-            const iframes = $(tabDiv).find('iframe');
-            for (const iframe of iframes) {
-                let src = $(iframe).attr('data-src') || $(iframe).attr('src');
-                if (src) {
-                    if (src.startsWith('//')) src = 'https:' + src;
-                    if (src.includes('loadm')) {
-                        const stream = await extractLoadM(src, pageUrl, mfpUrl, mfpPsw, isSub);
-                        if (stream) streams.push(stream);
-                    }
-                }
-            }
+        const players: { src: string, isSub: boolean }[] = [];
+        const seen = new Set<string>();
+        const pick = (ifr: any) => normalizeIframeSrc($(ifr).attr('data-src')) || normalizeIframeSrc($(ifr).attr('src'));
+        $('#player2 > div[id^="tab"]').each((_, tabDiv) => {
+            const isSub = tabLangMap[$(tabDiv).attr('id') || ''] === 'SUB';
+            // Uqload usa <IFRAME SRC=...>, gli altri data-src (lazyload): cheerio normalizza il maiuscolo
+            $(tabDiv).find('iframe').each((__, ifr) => {
+                const src = pick(ifr);
+                if (src && !seen.has(src)) { seen.add(src); players.push({ src, isSub }); }
+            });
+        });
+        if (players.length === 0) {
+            $('iframe').each((_, ifr) => {
+                const src = pick(ifr);
+                if (src && !seen.has(src)) { seen.add(src); players.push({ src, isSub: false }); }
+            });
         }
+        console.log(`[Guardoserie] ${players.length} player: ${players.map(p => (p.src.match(/\/\/([^/]+)/) || [])[1]).join(', ')}`);
 
-        if (streams.length === 0) {
-            const iframes = $('iframe');
-            for (const iframe of iframes) {
-                let src = $(iframe).attr('data-src') || $(iframe).attr('src');
-                if (src) {
-                    if (src.startsWith('//')) src = 'https:' + src;
-                    if (src.includes('loadm')) {
-                        const stream = await extractLoadM(src, pageUrl, mfpUrl, mfpPsw, false);
-                        if (stream) streams.push(stream);
-                    }
-                }
-            }
-        }
+        const results = await Promise.all(players.map(p => resolveGuardoPlayer(p.src, pageUrl, siteHost)));
+        results.forEach((r, i) => { if (r) streams.push(buildGuardoserieStream(r, players[i].isSub, mfpUrl, mfpPsw)); });
     } catch (e) {
         console.error(`[Guardoserie] Resolve page failed: ${e}`);
     }

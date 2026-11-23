@@ -1,10 +1,10 @@
 import { CookieJar } from 'tough-cookie';
-import * as crypto from 'crypto';
 import { Stream } from 'stremio-addon-sdk';
 import { buildUnifiedStreamName, providerLabel } from '../utils/unifiedNames';
 import * as cheerio from 'cheerio';
 import { fetch, ProxyAgent, Response } from 'undici';
 import { getDomain } from '../utils/domains';
+import { resolveGuardoPlayer, wrapWithMfp, normalizeIframeSrc, scoreTitle, isUqload, HostResult } from './guardo-hosts';
 
 // Config constants - dynamic domain from domains.json
 const getTargetDomain = () => `https://${getDomain('guardaflix') || 'guardaplay.bar'}`;
@@ -93,7 +93,7 @@ async function fetchWithBypass(url: string, options: any = {}): Promise<{ data: 
 
     try {
         // 1. Try direct fetch (Fastest)
-        const res = await fetchWithCookies(url, options, 2000);
+        const res = await fetchWithCookies(url, options, parseInt(process.env.GUARDAFLIX_TIMEOUT_MS || '8000', 10));
         if (res.status === 403 || res.status === 400) {
             throw Object.assign(new Error(`HTTP ${res.status}`), { response: { status: res.status } });
         }
@@ -182,277 +182,117 @@ function buildUqloadMfpStream(uqloadUrl: string, mfpUrl: string, mfpPsw?: string
     };
 }
 
-// --- LOADM EXTRACTOR ---
-const KEY = Buffer.from('kiemtienmua911ca', 'utf-8');
-const IV = Buffer.from('1234567890oiuytr', 'utf-8');
-
-async function extractLoadM(playerUrl: string, referer: string, mfpUrl?: string, mfpPsw?: string, isSub: boolean = false): Promise<Stream | null> {
-    try {
-        const parts = playerUrl.split('#');
-        const id = parts[1];
-        const playerDomain = new URL(playerUrl).origin;
-        const apiUrl = `${playerDomain}/api/v1/video?id=${id}&w=2560&h=1440&r=${encodeURIComponent(referer)}`;
-
-        const response = await fetchWithBypass(apiUrl, {
-            headers: { 'Referer': playerUrl }
-        });
-
-        const hexData = response.data;
-        const cleanHex = hexData.replace(/[^0-9a-fA-F]/g, '');
-        if (!cleanHex || cleanHex.length === 0) return null;
-
-        const encryptedBytes = Buffer.from(cleanHex, 'hex');
-        const decipher = crypto.createDecipheriv('aes-128-cbc', KEY, IV);
-        decipher.setAutoPadding(false);
-
-        let decrypted = Buffer.concat([decipher.update(encryptedBytes), decipher.final()]);
-        const padLen = decrypted[decrypted.length - 1];
-        if (padLen >= 1 && padLen <= 16) {
-            decrypted = decrypted.subarray(0, decrypted.length - padLen);
-        }
-
-        const jsonStr = decrypted.toString('utf-8');
-        const data = JSON.parse(jsonStr);
-        const hls = data['cf'];
-        const title = data['title'] || 'Stream';
-
-        if (hls) {
-            let finalUrl = hls;
-
-            // Wrap in MFP if configured
-            if (mfpUrl) {
-                const proxyUrl = `${mfpUrl.replace(/\/+$/, '')}/proxy/hls/manifest.m3u8`;
-                const params = new URLSearchParams();
-                params.append('d', hls);
-                if (mfpPsw) params.append('api_password', mfpPsw);
-
-                // Pass headers to MFP
-                params.append('h_Referer', playerUrl);
-                params.append('h_Origin', playerDomain);
-                params.append('h_User-Agent', SHARED_HEADERS['User-Agent']);
-
-                finalUrl = `${proxyUrl}?${params.toString()}`;
-            }
-
-            return {
-                name: providerLabel('guardaflix'),
-                title: buildUnifiedStreamName({
-                    baseTitle: title,
-                    isSub: isSub,
-                    proxyOn: !!mfpUrl,
-                    provider: 'guardaflix',
-                    playerName: 'LoadM',
-                    hideProviderInTitle: true
-                }),
-                url: finalUrl,
-                behaviorHints: {
-                    notWebReady: true,
-                    proxyHeaders: {
-                        request: {
-                            "Referer": playerUrl,
-                            "Origin": playerDomain,
-                            "User-Agent": SHARED_HEADERS['User-Agent']
-                        }
-                    }
-                }
-            };
-        }
-    } catch (e) {
-        console.error(`[Guardaflix] LoadM extraction failed: ${e}`);
-    }
-    return null;
-}
-
 // --- SEARCH & SCRAPE ---
 
-async function searchGuardaflix(query: string, year: string): Promise<string | null> {
+async function searchGuardaflix(query: string, year: string, titles: string[] = []): Promise<string | null> {
     try {
-        // Usa ricerca diretta /?s=
         const searchUrl = `${getTargetDomain()}/?s=${encodeURIComponent(query)}`;
         console.log('[Guardaflix] Direct search:', searchUrl);
 
         const res = await fetchWithBypass(searchUrl);
         console.log('[GF][Direct] search html length', res.data.length);
-
         const $ = cheerio.load(res.data);
+        const wantYear = parseInt(year, 10) || 0;
+        const wanted = titles.length ? titles : [query];
 
-        // Normalizza query per matching
-        const queryLower = query.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-        // Cerca tutti i link che potrebbero essere risultati film
-        const allLinks: { href: string, text: string }[] = [];
-        $('a[href*="/film/"]').each((_, el) => {
-            const href = $(el).attr('href');
-            if (!href || href === '#') return;
-            // Filtra link generici
-            if (/\/film\/?$/.test(href)) return;
-            if (!/\/film\/[a-z0-9-]+/i.test(href)) return;
-
-            const text = $(el).text().trim();
-            allLinks.push({ href: href.startsWith('http') ? href : `${getTargetDomain()}${href}`, text });
+        // Dal 2026 i risultati sono <article class="post ... movies"> con h2.entry-title,
+        // span.year e un link vuoto a.lnk-blk verso /movies/<slug>/ (prima era /film/<slug>/)
+        let best: { href: string, score: number } | null = null;
+        let count = 0;
+        $('article.post').each((_, el) => {
+            const href = $(el).find('a[href*="/movies/"], a[href*="/film/"]').first().attr('href') || '';
+            if (!/\/(?:movies|film)\/[a-z0-9-]+/i.test(href)) return;
+            count++;
+            const title = $(el).find('.entry-title').first().text().trim();
+            const y = parseInt($(el).find('.year').first().text().trim(), 10) || 0;
+            const score = scoreTitle(title, y, wanted, wantYear);
+            const abs = href.startsWith('http') ? href : `${getTargetDomain()}${href}`;
+            if (!best || score > best.score) best = { href: abs, score };
         });
-
-        console.log('[Guardaflix] Found', allLinks.length, 'candidate links');
-
-        // Prima cerca match esatto
-        for (const { href, text } of allLinks) {
-            const textLower = text.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const hrefLower = href.toLowerCase();
-
-            if (textLower.includes(queryLower) || hrefLower.includes(queryLower)) {
-                if (year && (text.includes(year) || href.includes(year))) {
-                    console.log('[Guardaflix] Found with year match:', href);
-                    return href;
-                } else if (!year) {
-                    console.log('[Guardaflix] Found query match:', href);
-                    return href;
-                }
-            }
+        console.log('[Guardaflix] Found', count, 'candidate links');
+        const chosen = best as { href: string, score: number } | null;
+        if (chosen && chosen.score >= 5) {
+            console.log(`[Guardaflix] Match ${chosen.href} (score ${chosen.score})`);
+            return chosen.href;
         }
-
-        // Se nessun match con query, ritorna il primo link valido
-        if (allLinks.length > 0) {
-            console.log('[Guardaflix] Returning first valid link:', allLinks[0].href);
-            return allLinks[0].href;
-        }
-
-        console.log('[Guardaflix] No results found in search page');
+        console.log(`[Guardaflix] Nessun risultato affidabile (miglior score ${chosen ? chosen.score : 'n/d'})`);
     } catch (e) {
         console.error(`[Guardaflix] Search failed: ${e}`);
     }
     return null;
 }
 
-import * as fs from 'fs';
+function buildGuardaflixStream(res: HostResult, isSub: boolean, mfpUrl?: string, mfpPsw?: string): Stream {
+    const viaMfp = !!mfpUrl && res.hls;
+    return {
+        name: providerLabel('guardaflix'),
+        title: buildUnifiedStreamName({
+            baseTitle: res.player,
+            isSub,
+            proxyOn: viaMfp,
+            provider: 'guardaflix',
+            playerName: res.player,
+            hideProviderInTitle: true
+        }),
+        url: wrapWithMfp(res, mfpUrl, mfpPsw),
+        behaviorHints: {
+            notWebReady: true,
+            ...(viaMfp ? {} : { proxyHeaders: { request: res.headers } })
+        } as any
+    };
+}
 
 async function resolvePageStream(pageUrl: string, mfpUrl?: string, mfpPsw?: string): Promise<Stream[]> {
     const streams: Stream[] = [];
     try {
         const res = await fetchWithBypass(pageUrl);
         const $ = cheerio.load(res.data);
+        const siteHost = new URL(getTargetDomain()).hostname;
 
-        // Build options-to-language mapping from .aa-tbs li a span.server
-        // e.g., href="#options-0" -> span.server contains "Loadm -ITA" or "-SUB"
+        // href="#options-N" -> span.server "Loadm -ITA" / "uqload -ITA" / "... -SUB"
         const optLangMap: Record<string, 'ITA' | 'SUB'> = {};
         $('.aa-tbs li a, .video-options ul li a').each((_, el) => {
             const href = $(el).attr('href');
             const serverSpan = $(el).find('span.server').text().toLowerCase();
             if (href && href.startsWith('#options-')) {
-                const optId = href.substring(1); // Remove #
-                if (serverSpan.includes('sub')) {
-                    optLangMap[optId] = 'SUB';
-                } else if (serverSpan.includes('ita')) {
-                    optLangMap[optId] = 'ITA';
-                }
-            }
-        });
-        console.log('[Guardaflix] Options language mapping:', optLangMap);
-
-        // Also check the main language group buttons (span.btn.active.rtg or span.btn.rtg)
-        let defaultLang: 'ITA' | 'SUB' = 'ITA';
-        const langGroupBtns = $('.video-options .d-flex-ch .btr span.btn');
-        langGroupBtns.each((_, el) => {
-            const text = $(el).text().toLowerCase();
-            if ($(el).hasClass('active')) {
-                if (text.includes('sub')) {
-                    defaultLang = 'SUB';
-                } else if (text.includes('ita')) {
-                    defaultLang = 'ITA';
-                }
+                if (serverSpan.includes('sub')) optLangMap[href.substring(1)] = 'SUB';
+                else if (serverSpan.includes('ita')) optLangMap[href.substring(1)] = 'ITA';
             }
         });
 
-        // Iterate over option divs and their iframes
-        const optionDivs = $('.video.aa-tb[id^="options-"]');
+        const pick = (doc: any, ifr: any) => normalizeIframeSrc(doc(ifr).attr('data-src')) || normalizeIframeSrc(doc(ifr).attr('src'));
+        const players: { src: string, isSub: boolean }[] = [];
+        const seen = new Set<string>();
+        const add = (src: string | null, isSub: boolean) => { if (src && !seen.has(src)) { seen.add(src); players.push({ src, isSub }); } };
+
+        let optionDivs = $('.video.aa-tb[id^="options-"]').toArray();
+        const fromOptions = optionDivs.length > 0;
+        if (!fromOptions) optionDivs = [$.root().get(0) as any];
         for (const optDiv of optionDivs) {
-            const optId = $(optDiv).attr('id') || '';
-            const lang = optLangMap[optId] || defaultLang;
-            const isSub = lang === 'SUB';
-
-            const iframes = $(optDiv).find('iframe');
-            for (const iframe of iframes) {
-                let src = $(iframe).attr('data-src') || $(iframe).attr('src');
+            const isSub = fromOptions && optLangMap[$(optDiv).attr('id') || ''] === 'SUB';
+            for (const iframe of $(optDiv).find('iframe').toArray()) {
+                const src = pick($, iframe);
                 if (!src) continue;
-
-                if (src.startsWith('//')) src = 'https:' + src;
-
-                // Direct LoadM
-                if (src.includes('loadm.cam') || src.includes('loadm')) {
-                    const stream = await extractLoadM(src, pageUrl, mfpUrl, mfpPsw, isSub);
-                    if (stream) streams.push(stream);
-                }
-                // Uqload via MFP (only if mfpUrl configured)
-                else if (src.includes('uqload') && mfpUrl) {
-                    const stream = buildUqloadMfpStream(src, mfpUrl, mfpPsw, isSub);
-                    streams.push(stream);
-                }
-                // Recursive Embed (trembed)
-                else if (src.includes('trembed=')) {
-                    console.log(`[Guardaflix] Inspecting embed: ${src}`);
+                if (src.includes('trembed=')) {
+                    // pagina intermedia del tema WordPress: contiene l'iframe vero (loadm/uqload/mload/vixsrc)
                     try {
                         const embedRes = await fetchWithBypass(src, { headers: { 'Referer': pageUrl } });
-                        const $embed = cheerio.load(embedRes.data);
-                        const nestedIframes = $embed('iframe');
-                        for (const nested of nestedIframes) {
-                            let nSrc = $(nested).attr('data-src') || $(nested).attr('src');
-                            if (nSrc) {
-                                if (nSrc.startsWith('//')) nSrc = 'https:' + nSrc;
-                                if (nSrc.includes('loadm.cam') || nSrc.includes('loadm')) {
-                                    const stream = await extractLoadM(nSrc, pageUrl, mfpUrl, mfpPsw, isSub);
-                                    if (stream) streams.push(stream);
-                                }
-                                else if (nSrc.includes('uqload') && mfpUrl) {
-                                    const stream = buildUqloadMfpStream(nSrc, mfpUrl, mfpPsw, isSub);
-                                    streams.push(stream);
-                                }
-                            }
-                        }
+                        const $e = cheerio.load(embedRes.data);
+                        $e('iframe').each((_, n) => add(pick($e, n), isSub));
                     } catch (e) {
                         console.error(`[Guardaflix] Failed to inspect embed: ${e}`);
                     }
+                } else {
+                    add(src, isSub);
                 }
             }
         }
+        console.log(`[Guardaflix] ${players.length} player: ${players.map(p => (p.src.match(/\/\/([^/]+)/) || [])[1]).join(', ')}`);
 
-        // Fallback: if no options found, try all iframes directly (legacy behavior)
-        if (streams.length === 0) {
-            const iframes = $('iframe');
-            console.log(`[Guardaflix] Fallback: Found ${iframes.length} iframes on page`);
-            for (const iframe of iframes) {
-                let src = $(iframe).attr('data-src') || $(iframe).attr('src');
-                if (!src) continue;
-                if (src.startsWith('//')) src = 'https:' + src;
-
-                if (src.includes('loadm.cam') || src.includes('loadm')) {
-                    const stream = await extractLoadM(src, pageUrl, mfpUrl, mfpPsw, false);
-                    if (stream) streams.push(stream);
-                }
-                else if (src.includes('uqload') && mfpUrl) {
-                    const stream = buildUqloadMfpStream(src, mfpUrl, mfpPsw, false);
-                    streams.push(stream);
-                }
-                else if (src.includes('trembed=')) {
-                    try {
-                        const embedRes = await fetchWithBypass(src, { headers: { 'Referer': pageUrl } });
-                        const $embed = cheerio.load(embedRes.data);
-                        const nestedIframes = $embed('iframe');
-                        for (const nested of nestedIframes) {
-                            let nSrc = $(nested).attr('data-src') || $(nested).attr('src');
-                            if (nSrc) {
-                                if (nSrc.startsWith('//')) nSrc = 'https:' + nSrc;
-                                if (nSrc.includes('loadm.cam') || nSrc.includes('loadm')) {
-                                    const stream = await extractLoadM(nSrc, pageUrl, mfpUrl, mfpPsw, false);
-                                    if (stream) streams.push(stream);
-                                }
-                                else if (nSrc.includes('uqload') && mfpUrl) {
-                                    const stream = buildUqloadMfpStream(nSrc, mfpUrl, mfpPsw, false);
-                                    streams.push(stream);
-                                }
-                            }
-                        }
-                    } catch { }
-                }
-            }
+        for (const p of players) {
+            const r = await resolveGuardoPlayer(p.src, pageUrl, siteHost);
+            if (r) streams.push(buildGuardaflixStream(r, p.isSub, mfpUrl, mfpPsw));
+            else if (isUqload(p.src) && mfpUrl) streams.push(buildUqloadMfpStream(p.src, mfpUrl, mfpPsw, p.isSub)); // ripiego vecchio
         }
     } catch (e) {
         console.error(`[Guardaflix] Resolve page failed: ${e}`);
@@ -548,7 +388,9 @@ async function getGuardaflixStreamsCore(type: string, id: string, tmdbApiKey?: s
     const { name, year } = tmdbMeta;
     console.log(`[Guardaflix] TMDB (IT) found: ${name} (${year})`);
 
-    const pageUrl = await searchGuardaflix(name, year);
+    const engMetaEarly = await getCinemetaMeta(type, imdbId);
+    const titles = [name, engMetaEarly?.name || ''].filter(Boolean);
+    const pageUrl = await searchGuardaflix(name, year, titles);
     if (!pageUrl) {
         console.log(`[Guardaflix] Not found on site (IT): ${name}`);
 
@@ -558,7 +400,7 @@ async function getGuardaflixStreamsCore(type: string, id: string, tmdbApiKey?: s
             const engMeta = await getCinemetaMeta(type, imdbId);
             if (engMeta && engMeta.name !== name) {
                 console.log(`[Guardaflix] Trying fallback with English title: ${engMeta.name}`);
-                const engUrl = await searchGuardaflix(engMeta.name, year);
+                const engUrl = await searchGuardaflix(engMeta.name, year, titles);
                 if (engUrl) {
                     console.log(`✅ [Guardaflix] Found with English title!`);
                     return await resolvePageStream(engUrl, mfpUrl, mfpPsw);

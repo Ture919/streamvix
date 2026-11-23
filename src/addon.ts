@@ -6763,7 +6763,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     };
                     const getFastPriority = (): string[] => {
                         if (isAnimeFastRequest) return ['animeunity', 'animeworld', 'animesaturn'];
-                        if (type === 'movie') return ['vixsrc', 'guardahd', 'vidxgo', 'cinemacity', 'guardaflix', 'toonitalia', 'toon'];
+                        if (type === 'movie') return ['vixsrc', 'guardahd', 'vidxgo', 'cinemacity', 'guardaflix', 'guardoserie', 'toonitalia', 'toon'];
                         if (type === 'series') return ['vixsrc', 'guardaserie', 'vidxgo', 'cinemacity', 'cb01', 'guardoserie', 'toonitalia', 'toon', 'eurostreaming'];
                         return [];
                     };
@@ -6870,8 +6870,8 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     }
 
 
-                    // === GUARDOSERIE PROVIDER (Series Only) ===
-                    if (guardoserieEnabled && (type as string) === 'series') {
+                    // === GUARDOSERIE PROVIDER (Series + Movies: il sito ha anche i film) ===
+                    if (guardoserieEnabled && ((type as string) === 'series' || (type as string) === 'movie')) {
                         scheduleProviderRun('Guardoserie', true, async () => {
                             try {
                                 const gsStreams = await getGuardoserieStreams(type, id, (config as any).tmdbApiKey, mfpUrl, mfpPsw);
@@ -7305,7 +7305,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     // fonte della stessa risposta (es. AnimeSaturn "I cinque samurai"); se non c'è, niente titolo.
                     const pulisciTitolo = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '')
                         .replace(/[^A-Za-z0-9 ]+/g, ' ').trim().replace(/\s+/g, '.');
-                    const generico = (t: string) => !t || /^(toon\.?italia|movie|stream|vidxgo|streamingcommunity|s\d+\.?e\d+|episodio\.?\d+|ep\.?\d+)$/i.test(t);
+                    const generico = (t: string) => !t || /^(toon\.?italia|movie|stream|vidxgo|streamingcommunity|uqload|loadm|mixdrop|supervideo|dropload|deltabit|maxstream|s\d+\.?e\d+|episodio\.?\d+|ep\.?\d+)$/i.test(t);
                     let titoloVero = '';
                     for (const st of allStreams as any[]) {
                         const fn = String(st?.behaviorHints?.filename || '');
