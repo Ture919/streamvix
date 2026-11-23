@@ -7333,6 +7333,18 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     }
                 }
 
+                // Fork Ture919 (23/11/2026): AIOStreams mostra nel campo "📡" behaviorHints.indexer: ci metto la fonte vera
+                // (es. "Anime Unity", "CB01 · Mixdrop") invece di "Proxy (ON)", così in lista si vede da quale sito arriva.
+                for (const st of allStreams as any[]) {
+                    if (!st || st.behaviorHints?.indexer) continue;
+                    const fonte = String(st.name || '').replace(/[^\p{L}\p{N} .'-]+/gu, ' ').replace(/\s{2,}/g, ' ').trim();
+                    const hostM = String(st.title || '').match(/▶️\s*([A-Za-z0-9][A-Za-z0-9 .-]{1,20})/);
+                    const host = hostM ? hostM[1].trim() : '';
+                    if (!fonte) continue;
+                    const ind = host && host.toLowerCase() !== fonte.toLowerCase() ? `${fonte} · ${host}` : fonte;
+                    st.behaviorHints = { ...(st.behaviorHints || {}), indexer: ind };
+                }
+
                 // Fork Ture919 (23/11/2026): DeltaBit via EasyProxy oggi restituisce una pagina HTML invece del video: nascosto
                 // (STREAMVIX_SHOW_DELTABIT=1 per rimostrarlo quando l'estrattore funziona).
                 if (process.env.STREAMVIX_SHOW_DELTABIT !== '1') {
