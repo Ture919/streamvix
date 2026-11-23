@@ -7301,6 +7301,20 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     const eE = pezziId.length >= 3 ? Number(pezziId[pezziId.length - 1]) : NaN;
                     const ep = Number.isFinite(sE) && Number.isFinite(eE)
                         ? `.S${String(sE).padStart(2, '0')}E${String(eE).padStart(2, '0')}` : '';
+                    // Titoli generici (ToonItalia, VidXgo "Movie", solo "S01E01"): si usa il titolo vero preso da un'altra
+                    // fonte della stessa risposta (es. AnimeSaturn "I cinque samurai"); se non c'è, niente titolo.
+                    const pulisciTitolo = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '')
+                        .replace(/[^A-Za-z0-9 ]+/g, ' ').trim().replace(/\s+/g, '.');
+                    const generico = (t: string) => !t || /^(toon\.?italia|movie|stream|vidxgo|streamingcommunity|s\d+\.?e\d+|episodio\.?\d+|ep\.?\d+)$/i.test(t);
+                    let titoloVero = '';
+                    for (const st of allStreams as any[]) {
+                        const fn = String(st?.behaviorHints?.filename || '');
+                        const daFile = fn ? fn.split(/\.S\d{2}E\d{2}|\.(?:2160|1080|720|480)p|\.(?:ITA|JPN|ENG)\b/)[0] : '';
+                        const daTitolo = pulisciTitolo(String(st?.title || st?.description || '').split('\n')[0]
+                            .replace(/🎬/g, '').replace(/\(S\d+E\d+\)|▪.*$|\(Srv\d+\)/g, ''));
+                        const c = [daFile, daTitolo].find((x) => x && !generico(x) && !/toon\.?italia/i.test(x));
+                        if (c) { titoloVero = c; break; }
+                    }
                     for (const st of allStreams as any[]) {
                         if (!st || st.behaviorHints?.filename) continue;
                         const testo = `${st.name || ''} ${st.title || ''} ${st.description || ''}`;
@@ -7310,9 +7324,12 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         if (/🇬🇧|\bENG\b/.test(testo)) lingue.push('ENG');
                         if (/\[SUB\]/.test(testo)) lingue.push('SUB.ITA');
                         if (!res && !lingue.length) continue;
-                        const riga = String(st.title || st.description || '').split('\n')[0].replace(/🎬/g, '').replace(/\(S\d+E\d+\)|▪.*$/g, '');
-                        const base = riga.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]+/g, ' ').trim().replace(/\s+/g, '.') || 'Stream';
-                        st.behaviorHints = { ...(st.behaviorHints || {}), filename: [base + ep, res, ...lingue].filter(Boolean).join('.') };
+                        const riga = String(st.title || st.description || '').split('\n')[0].replace(/🎬/g, '')
+                            .replace(/\(S\d+E\d+\)|▪.*$|\(Srv\d+\)/g, '').replace(/^\s*ToonItalia\s*-\s*/i, '');
+                        let base = pulisciTitolo(riga);
+                        if (generico(base)) base = titoloVero;
+                        const nome = [base ? base + ep : ep.replace(/^\./, ''), res, ...lingue].filter(Boolean).join('.');
+                        st.behaviorHints = { ...(st.behaviorHints || {}), filename: nome };
                     }
                 }
 
