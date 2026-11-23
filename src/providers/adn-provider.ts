@@ -7,8 +7,9 @@
 // `/extractor/video.mp4?host=adn&d=<api url>&redirect_stream=true` endpoint. 
 //
 // Modes:
-//   A) EasyProxy mode (`mfpUrl` set) — preferred. Requires an `adn`
-//      extractor in EasyProxy.
+//   A) EasyProxy mode (`mfpUrl` set) — preferred. Fork Ture919: non serve un
+//      estrattore (in EasyProxy si chiama `ads`, non `adn`): TureFlix ed
+//      EasyProxy hanno lo stesso IP, basta incapsulare il link in /proxy/stream.
 //   B) Direct mode — addon resolves itself; the raw CDN URL is returned to
 //      the player. Works only when addon and player egress from the same IP
 //      (rare). PROXY_BACKUP only helps if ADN blocks the addon's host for
@@ -127,7 +128,10 @@ async function fetchJson(url: string, cookie?: string, allowBackup = false): Pro
     const backup = String(process.env.PROXY_BACKUP || process.env.PROXY || '').trim();
     if (!backup) return null;
     console.log('[ADN] retrying via PROXY:', backup);
-    return rawFetchJson(url, cookie, backup);
+    const viaBackup = await rawFetchJson(url, cookie, backup);
+    // Firma ipsig legata all'IP del proxy: il link non va incapsulato in EasyProxy.
+    if (viaBackup && typeof viaBackup === 'object') viaBackup.__adnDirect = false;
+    return viaBackup;
 }
 
 export class AdnProvider {
@@ -194,15 +198,36 @@ export class AdnProvider {
                 'Referer': `${BASE_URL}/`
             };
 
+            // Fork Ture919: TureFlix ed EasyProxy escono dallo stesso IP di casa,
+            // quindi la firma ipsig del link CDN vale anche per EasyProxy. Con
+            // mfpUrl impostato il video passa da /proxy/stream: funziona anche
+            // fuori casa (provato il 23/11/2026 su Biker Boyz e Oppenheimer,
+            // 206 video/mp4). Il cookie resta nel server, non finisce nel link.
+            // Attenzione: se l'API e' passata da PROXY_BACKUP la firma e' di
+            // quell'IP e il link incapsulato non va: in quel caso resta diretto.
+            const mfpBase = String(this.config.mfpUrl || '').trim().replace(/\/+$/, '');
+            let streamUrl = String(cdn.url);
+            let viaProxy = false;
+            if (mfpBase && payload?.__adnDirect !== false) {
+                const params = new URLSearchParams({ d: streamUrl });
+                if (this.config.mfpPassword) params.set('api_password', this.config.mfpPassword);
+                params.set('h_User-Agent', playbackHeaders['User-Agent']);
+                params.set('h_Referer', playbackHeaders['Referer']);
+                streamUrl = `${mfpBase}/proxy/stream?${params.toString()}`;
+                viaProxy = true;
+            }
+
             const stream: StreamForStremio = {
-                url: String(cdn.url),
-                title: `📁 ${displayTitle}\n💾 720p • ADN CDN`,
-                behaviorHints: {
-                    notWebReady: true,
-                    proxyHeaders: { request: playbackHeaders }
-                } as any
+                url: streamUrl,
+                title: `📁 ${displayTitle}\n💾 720p • ADN CDN${viaProxy ? ' (EP)' : ''}`,
+                behaviorHints: viaProxy
+                    ? ({ notWebReady: true } as any)
+                    : ({
+                        notWebReady: true,
+                        proxyHeaders: { request: playbackHeaders }
+                    } as any)
             };
-            (stream as any).headers = playbackHeaders;
+            if (!viaProxy) (stream as any).headers = playbackHeaders;
             streams.push(stream);
         }
 
