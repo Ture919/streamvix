@@ -6,6 +6,36 @@ import { formatMediaFlowUrl } from '../utils/mediaflow';
 const BASE_URL = 'https://toonitalia.xyz';
 const SEARCH_URL = `${BASE_URL}/?s=`;
 
+// Fork Ture919 (23/11/2026): toonitalia.xyz è dietro la protezione Cloudflare ("Just a moment...", 403).
+// Se la richiesta diretta viene bloccata, la pagina si chiede a FlareSolverr (FLARESOLVERR_URL, es. http://flaresolverr:8191/v1);
+// i cookie cf_clearance e lo User-Agent che restituisce si riusano per le richieste dirette successive.
+const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+let cfCookie = '';
+let cfUserAgent = '';
+
+function isCloudflareChallenge(status: number, body: any): boolean {
+    const text = typeof body === 'string' ? body : '';
+    return status === 403 || status === 503 || /<title>Just a moment\.\.\.<\/title>|cf-turnstile|challenge-platform/i.test(text);
+}
+
+async function fetchToonPage(url: string): Promise<string> {
+    const headers: Record<string, string> = { 'User-Agent': cfUserAgent || DEFAULT_UA };
+    if (cfCookie) headers['Cookie'] = cfCookie;
+    const direct = await axios.get(url, { headers, timeout: 10000, validateStatus: () => true });
+    if (!isCloudflareChallenge(direct.status, direct.data)) return String(direct.data || '');
+
+    const solver = process.env.FLARESOLVERR_URL;
+    if (!solver) throw new Error(`Cloudflare challenge (HTTP ${direct.status}) e FLARESOLVERR_URL non impostato`);
+    console.log(`[ToonItalia] Cloudflare: passo da FlareSolverr per ${url}`);
+    const res = await axios.post(solver, { cmd: 'request.get', url, maxTimeout: 60000 }, { timeout: 70000 });
+    const sol = res.data?.solution;
+    if (res.data?.status !== 'ok' || !sol) throw new Error(`FlareSolverr: ${res.data?.message || 'nessuna soluzione'}`);
+    const cookies = Array.isArray(sol.cookies) ? sol.cookies : [];
+    if (cookies.length) cfCookie = cookies.map((c: any) => `${c.name}=${c.value}`).join('; ');
+    if (sol.userAgent) cfUserAgent = String(sol.userAgent);
+    return String(sol.response || '');
+}
+
 /**
  * Interfaccia per la richiesta dello stream
  */
@@ -118,13 +148,9 @@ async function searchContent(query: string): Promise<string | null> {
         const searchQuery = normalizeTitle(query);
         console.log(`[ToonItalia][Search] Query: "${query}" -> normalized: "${searchQuery}"`);
 
-        const response = await axios.get(`${SEARCH_URL}${encodeURIComponent(searchQuery)}`, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-        });
+        const html = await fetchToonPage(`${SEARCH_URL}${encodeURIComponent(searchQuery)}`);
 
-        const $ = cheerio.load(response.data);
+        const $ = cheerio.load(html);
 
         // Funzione per normalizzare stringa: solo lettere e numeri
         const normalizeForMatch = (str: string) => {
@@ -162,13 +188,9 @@ async function searchContent(query: string): Promise<string | null> {
 
 async function extractEpisodes(contentUrl: string, tmdbSeasonCount: number, preferredSection?: string): Promise<EpisodeLink[]> {
     try {
-        const response = await axios.get(contentUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-        });
+        const html = await fetchToonPage(contentUrl);
 
-        const $ = cheerio.load(response.data);
+        const $ = cheerio.load(html);
         const episodes: EpisodeLink[] = [];
 
         // Cerca tutto il contenuto
