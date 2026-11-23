@@ -720,6 +720,14 @@ export class AnimeUnityProvider {
     if (!html) return [];
 
     const $ = cheerio.load(String(html));
+    const inertiaRaw = $('[data-page]').first().attr('data-page');
+    if (inertiaRaw && !$('video-player').length) {
+      let inertia: any = null;
+      try { inertia = JSON.parse(inertiaRaw); } catch { inertia = null; }
+      if (inertia?.props?.anime) {
+        return this.extractStreamsFromInertiaPage(inertia, animeUrl, requestedEpisodeInput, seasonNumber, isMovie, titleOverride);
+      }
+    }
     const vp = $('video-player').first();
     const animeData = parseVideoPlayerJson(vp.attr('anime'), {});
     const episodesData = parseVideoPlayerJson(vp.attr('episodes'), []);
@@ -798,13 +806,120 @@ export class AnimeUnityProvider {
     if (!selected?.episodeId) return [];
 
     const streamResult = await getStreamData(animeId, animeSlug, selected.episodeId);
-    const streams: StreamForStremio[] = [];
-    const seenLinks = new Set<string>();
 
     const sNum = seasonNumber || 1;
     let baseTitle = `${capitalize(displayTitle)} ▪ ${langLabel} ▪ S${sNum}`;
     const resolvedEpisodeNum = parsePositiveInt(selected.num) || requestedEpisode;
     if (resolvedEpisodeNum) baseTitle += `E${resolvedEpisodeNum}`;
+
+    return this.buildStreamsFromStreamResult(streamResult, animeUrl, baseTitle);
+  }
+
+  // Sito nuovo di AnimeUnity (Inertia, 11/2026): la pagina dell'anime ha i dati in data-page, gli episodi arrivano da
+  // /api/anime/<id>/episodes?start=N con le versioni ita/jpn dello stesso episodio in "videos", e il link del player
+  // (props.embedUrl) sta nella pagina /anime/<id>-<slug>/<videoId>. Fork Ture919: /info_api e <video-player> non esistono più.
+  private async extractStreamsFromInertiaPage(
+    page: any,
+    animeUrl: string,
+    requestedEpisodeInput: number | null,
+    seasonNumber: number | null,
+    isMovie: boolean,
+    titleOverride?: string
+  ): Promise<StreamForStremio[]> {
+    const anime = page?.props?.anime || {};
+    const animeId = parsePositiveInt(anime?.id);
+    const animeSlug = String(anime?.slug || '').trim();
+    if (!animeId || !animeSlug) return [];
+
+    const displayTitle = titleOverride || sanitizeAnimeTitle(anime?.title_it || anime?.title_eng || anime?.title) || 'Unknown Title';
+    const requestedEpisode = normalizeRequestedEpisode(requestedEpisodeInput) || 1;
+
+    let episodes: any[] = Array.isArray(page?.props?.episodes) ? page.props.episodes : [];
+    const findEntry = (list: any[]) => {
+      const exact = list.find((e: any) => parseInt(String(e?.number ?? ''), 10) === requestedEpisode);
+      if (exact) return exact;
+      if (isMovie && list.length) return list[0];
+      return list.find((e: any) => {
+        const a = parseInt(String(e?.seq_number_start ?? ''), 10);
+        const b = parseInt(String(e?.seq_number_end ?? ''), 10);
+        return Number.isInteger(a) && Number.isInteger(b) && a <= requestedEpisode && requestedEpisode <= b;
+      }) || null;
+    };
+    let entry = findEntry(episodes);
+    if (!entry) {
+      try {
+        const payload = await auFetchResource(
+          `${getUnityBaseUrl()}/api/anime/${animeId}/episodes?start=${requestedEpisode}`,
+          caches,
+          {
+            as: 'json',
+            ttlMs: TTL.animePage,
+            cacheKey: `au-eps:${animeId}:${requestedEpisode}`,
+            timeoutMs: FETCH_TIMEOUT,
+            headers: { 'x-requested-with': 'XMLHttpRequest', referer: animeUrl },
+          }
+        );
+        episodes = Array.isArray(payload?.episodes) ? payload.episodes : [];
+        entry = findEntry(episodes);
+      } catch (error: any) {
+        console.warn('[AnimeUnity] episodes api failed:', error?.message || error);
+      }
+    }
+    if (!entry) return [];
+
+    const seenVideo = new Set<number>();
+    const videos = (Array.isArray(entry?.videos) ? entry.videos : []).filter((v: any) => {
+      const id = parsePositiveInt(v?.id);
+      if (!id || v?.is_hidden || seenVideo.has(id)) return false;
+      seenVideo.add(id);
+      return true;
+    });
+    // Prima l'audio italiano, poi il sottotitolato (stesso ordine di sempre: ITA sopra SUB)
+    videos.sort((a: any, b: any) => (String(a?.language) === 'ita' ? 0 : 1) - (String(b?.language) === 'ita' ? 0 : 1));
+
+    const sNum = seasonNumber || 1;
+    const epNum = parsePositiveInt(entry?.number) || requestedEpisode;
+    const out: StreamForStremio[] = [];
+    for (const video of videos) {
+      const videoId = parsePositiveInt(video?.id);
+      const videoPage = `${getUnityBaseUrl()}/anime/${animeId}-${animeSlug}/${videoId}`;
+      let embedUrl: string | null = null;
+      try {
+        const html = await auFetchResource(videoPage, caches, {
+          ttlMs: TTL.streamPage,
+          cacheKey: `au-video:${videoId}`,
+          timeoutMs: FETCH_TIMEOUT,
+          headers: { referer: animeUrl },
+        });
+        const $v = cheerio.load(String(html || ''));
+        const dp = $v('[data-page]').first().attr('data-page');
+        const vpage = dp ? JSON.parse(dp) : null;
+        embedUrl = toAbsoluteUrl(vpage?.props?.embedUrl || null, getUnityBaseUrl());
+      } catch (error: any) {
+        console.warn('[AnimeUnity] video page failed:', error?.message || error);
+      }
+      if (!embedUrl) continue;
+      const langLabel = String(video?.language || '').toLowerCase() === 'ita' ? 'ITA' : 'SUB';
+      let baseTitle = `${capitalize(displayTitle)} ▪ ${langLabel} ▪ S${sNum}`;
+      if (!isMovie && epNum) baseTitle += `E${epNum}`;
+      const built = await this.buildStreamsFromStreamResult(
+        { episode_page: videoPage, embed_url: embedUrl, mp4_url: null },
+        animeUrl,
+        baseTitle
+      );
+      out.push(...built);
+    }
+    console.log(`[AnimeUnity] Sito nuovo: anime ${animeId} ep ${epNum}, ${videos.length} versioni, ${out.length} stream`);
+    return out;
+  }
+
+  private async buildStreamsFromStreamResult(
+    streamResult: AnimeUnityStreamData,
+    animeUrl: string,
+    baseTitle: string
+  ): Promise<StreamForStremio[]> {
+    const streams: StreamForStremio[] = [];
+    const seenLinks = new Set<string>();
 
     const preferMp4 = /^(1|true|on)$/i.test(String(process.env.ANIMEUNITY_PREFER_MP4 || '0'));
     let added = false;
