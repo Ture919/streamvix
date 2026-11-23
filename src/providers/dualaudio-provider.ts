@@ -579,20 +579,33 @@ async function dualSyncCalcola(req: PrisynxReq): Promise<Stream[]> {
 // Fork Ture919 (23/11/2026): MovyITA e DualSync possono metterci piu' degli 11 s concessi da TureFlix (AIOStreams aspetta
 // TureFlix al massimo 20 s). Il calcolo continua in background anche dopo il tempo massimo e il risultato resta in memoria
 // per 2 ore: la ricerca successiva dello stesso titolo (anche da un altro dispositivo) lo trova subito.
+// Fork Ture919 (23/11/2026 notte): se il calcolo finisce DOPO il tempo massimo, la risposta intera di TureFlix per quel titolo
+// (tenuta in memoria 5 minuti da addon.ts) e' uscita senza queste fonti: `dopoIlTempo` la fa buttare via, cosi' gia' la
+// ricerca successiva (~25-30 s dopo) le mostra invece di aspettare i 5 minuti.
 const MEMORIA_MS = 2 * 60 * 60 * 1000;
+const TEMPO_MAX_MS = Number(process.env.STREAMVIX_PROVIDER_TIMEOUT_MS || 11000);
 const memoria = new Map<string, { quando: number; streams: Stream[] }>();
 const inCorso = new Map<string, Promise<Stream[]>>();
+const avvisi = new Map<string, Set<() => void>>();
 function conMemoria(nome: string, calcola: (req: PrisynxReq) => Promise<Stream[]>) {
-    return async (req: PrisynxReq): Promise<Stream[]> => {
+    return async (req: PrisynxReq, dopoIlTempo?: () => void): Promise<Stream[]> => {
         const chiave = `${nome}|${req.type}|${req.id}`;
         const m = memoria.get(chiave);
         if (m && Date.now() - m.quando < MEMORIA_MS) return m.streams;
+        if (dopoIlTempo) { if (!avvisi.has(chiave)) avvisi.set(chiave, new Set()); avvisi.get(chiave)!.add(dopoIlTempo); }
         let p = inCorso.get(chiave);
         if (!p) {
+            const inizio = Date.now();
             p = calcola(req).then((streams) => {
-                if (streams.length) memoria.set(chiave, { quando: Date.now(), streams });
+                if (streams.length) {
+                    memoria.set(chiave, { quando: Date.now(), streams });
+                    if (Date.now() - inizio > TEMPO_MAX_MS) {
+                        log(nome, `finito dopo ${Math.round((Date.now() - inizio) / 1000)} s: risposta vecchia di ${req.id} buttata via`);
+                        for (const fn of avvisi.get(chiave) || []) { try { fn(); } catch { /* niente */ } }
+                    }
+                }
                 return streams;
-            }).finally(() => inCorso.delete(chiave));
+            }).finally(() => { inCorso.delete(chiave); avvisi.delete(chiave); });
             inCorso.set(chiave, p);
         }
         return p;

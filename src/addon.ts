@@ -1829,6 +1829,14 @@ function _providerCacheGet(id: string, configHashInput: string): any[] | null {
     }
     return e.streams;
 }
+// Fork Ture919 (23/11/2026 notte): butta via le risposte in memoria di un titolo (tutte le configurazioni). La chiamano
+// MovyITA/DualSync quando finiscono dopo il tempo massimo; la seconda chiamata (10 s dopo) copre il caso in cui la risposta
+// incompleta venga salvata subito dopo la prima.
+function _providerCacheInvalidate(id: string): void {
+    const via = () => { for (const k of Array.from(_providerStreamCache.keys())) if (k.startsWith(id + '|')) _providerStreamCache.delete(k); };
+    via();
+    setTimeout(via, 10000).unref?.();
+}
 function _providerCacheSet(id: string, configHashInput: string, streams: any[]): void {
     if (PROVIDER_CACHE_DISABLED) return;
     if (!Array.isArray(streams) || streams.length === 0) return; // never cache empty results
@@ -7183,13 +7191,13 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         if (movyitaEnabled && (pxSeries || isMovie)) {
                             scheduleProviderRun('MovyITA', true, async () => {
                                 const { movyIta } = await import('./providers/dualaudio-provider');
-                                return { streams: await movyIta(pxReq) };
+                                return { streams: await movyIta(pxReq, () => _providerCacheInvalidate(id)) };
                             }, 'MovyITA', false, 11000);
                         }
                         if (dualsyncEnabled && (pxSeries || isMovie)) {
                             scheduleProviderRun('DualSync', true, async () => {
                                 const { dualSync } = await import('./providers/dualaudio-provider');
-                                return { streams: await dualSync(pxReq) };
+                                return { streams: await dualSync(pxReq, () => _providerCacheInvalidate(id)) };
                             }, 'DualSync', false, 11000);
                         }
                         if (realtimeEnabled && pxSeries) {
