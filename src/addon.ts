@@ -765,7 +765,7 @@ function isCfDlhdProxy(u: string): boolean { return extractDlhdIdFromCf(u) !== n
 const baseManifest: Manifest = {
     id: "org.stremio.vixcloud",
     version: "12.4.23",
-    name: "StreamViX | Elfhosted",
+    name: "TureFlix",
     description: "StreamViX addon con StreamingCommunity, Guardaserie, Altadefinizione, AnimeUnity, AnimeSaturn, AnimeWorld, Eurostreaming, TV ed Eventi Live",
     background: "https://raw.githubusercontent.com/qwertyuiop8899/StreamViX/refs/heads/main/public/backround.png",
     types: ["movie", "series", "tv", "anime"],
@@ -774,7 +774,7 @@ const baseManifest: Manifest = {
         {
             id: "streamvix_tv",
             type: "tv",
-            name: "StreamViX TV",
+            name: "TureFlix TV",
             extra: [
                 {
                     name: "genre",
@@ -798,7 +798,7 @@ const baseManifest: Manifest = {
         {
             id: "streamvix_live",
             type: "tv",
-            name: "StreamViX Live",
+            name: "TureFlix Live",
             extra: [
                 {
                     name: "genre",
@@ -821,7 +821,7 @@ const baseManifest: Manifest = {
         {
             id: "streamvix_eventi",
             type: "tv",
-            name: "StreamViX Eventi",
+            name: "TureFlix Eventi",
             extra: [
                 {
                     name: "genre",
@@ -854,7 +854,7 @@ const baseManifest: Manifest = {
         {
             id: "streamvix_dvr",
             type: "tv",
-            name: "StreamViX DVR",
+            name: "TureFlix DVR",
             extra: [
                 {
                     name: "genre",

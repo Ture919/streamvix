@@ -1,3 +1,9 @@
+# TureFlix
+
+Addon Stremio/Nuvio italiano di Ture919: fork di [StreamViX](https://github.com/qwertyuiop8899/StreamViX) di qwertyuiop8899 (licenza GPL-3.0, vedi LICENSE.txt), con fonti portate dal plugin PriSynx dello stesso autore e correzioni nostre (AnimeUnity sito nuovo, sonda di risoluzione/codec/peso, MovyITA, DualSync, PaCC, Real Time, CB01, Eurostreaming, Guardoserie, Toonitalia via FlareSolverr).
+
+---
+
 
 <img width="230" height="293" alt="icon" src="https://github.com/user-attachments/assets/11ef8b0e-6d55-44a4-9ccc-ae7031e99f34" />
 
