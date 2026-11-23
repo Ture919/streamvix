@@ -333,7 +333,7 @@ async function videoIntero(videoUrl: string, headers: Record<string, string>): P
     }
 }
 
-export async function movyIta(req: PrisynxReq): Promise<Stream[]> {
+async function movyItaCalcola(req: PrisynxReq): Promise<Stream[]> {
     const isTv = req.type === 'series';
     const pid = parseId(req.id);
     if (isTv && (pid.season == null || pid.episode == null)) return [];
@@ -382,7 +382,7 @@ const VIDFAST_SITES = [
 ];
 const CINEJOY_API = 'https://api.wing.st';
 const CINEJOY_ORIGIN = 'https://cinejoy.pk';
-const DS_BUDGET_MS = 10000; // Fork Ture919 23/11: AIOStreams aspetta TureFlix al massimo 20 s (prima 22000 = TureFlix intero in timeout)
+const DS_BUDGET_MS = 22000; // Fork Ture919 23/11: calcolo completo; TureFlix aspetta 11 s e il resto finisce in memoria per la ricerca dopo
 const DB_TOL_S = 0.25;
 
 interface Encode {
@@ -505,7 +505,7 @@ async function vidfast(site: typeof VIDFAST_SITES[number], ctx: { info: TmdbInfo
     });
 }
 
-export async function dualSync(req: PrisynxReq): Promise<Stream[]> {
+async function dualSyncCalcola(req: PrisynxReq): Promise<Stream[]> {
     const deadline = Date.now() + DS_BUDGET_MS;
     const isTv = req.type === 'series';
     const pid = parseId(req.id);
@@ -574,3 +574,29 @@ export async function dualSync(req: PrisynxReq): Promise<Stream[]> {
     log('DualSync', `${out.length} stream da ${encodes.length} encode per ${info.title}`);
     return out;
 }
+
+
+// Fork Ture919 (23/11/2026): MovyITA e DualSync possono metterci piu' degli 11 s concessi da TureFlix (AIOStreams aspetta
+// TureFlix al massimo 20 s). Il calcolo continua in background anche dopo il tempo massimo e il risultato resta in memoria
+// per 2 ore: la ricerca successiva dello stesso titolo (anche da un altro dispositivo) lo trova subito.
+const MEMORIA_MS = 2 * 60 * 60 * 1000;
+const memoria = new Map<string, { quando: number; streams: Stream[] }>();
+const inCorso = new Map<string, Promise<Stream[]>>();
+function conMemoria(nome: string, calcola: (req: PrisynxReq) => Promise<Stream[]>) {
+    return async (req: PrisynxReq): Promise<Stream[]> => {
+        const chiave = `${nome}|${req.type}|${req.id}`;
+        const m = memoria.get(chiave);
+        if (m && Date.now() - m.quando < MEMORIA_MS) return m.streams;
+        let p = inCorso.get(chiave);
+        if (!p) {
+            p = calcola(req).then((streams) => {
+                if (streams.length) memoria.set(chiave, { quando: Date.now(), streams });
+                return streams;
+            }).finally(() => inCorso.delete(chiave));
+            inCorso.set(chiave, p);
+        }
+        return p;
+    };
+}
+export const movyIta = conMemoria('MovyITA', movyItaCalcola);
+export const dualSync = conMemoria('DualSync', dualSyncCalcola);
