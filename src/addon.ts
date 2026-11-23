@@ -83,6 +83,11 @@ interface AddonConfig {
     eurostreamingEnabled?: boolean;
     toonitaliaEnabled?: boolean;
     toonEnabled?: boolean;
+    // Fork Ture919 (23/11/2026): fonti portate da PriSynx
+    movyitaEnabled?: boolean;
+    dualsyncEnabled?: boolean;
+    realtimeEnabled?: boolean;
+    paccEnabled?: boolean;
     disableLiveTv?: boolean;
     trailerEnabled?: boolean;
     disableVixsrc?: boolean;
@@ -917,6 +922,10 @@ const baseManifest: Manifest = {
         { key: "eurostreamingEnabled", title: "Eurostreaming", type: "checkbox" },
         { key: "toonitaliaEnabled", title: "Enable ToonItalia", type: "checkbox" },
         { key: "toonEnabled", title: "Enable TOON", type: "checkbox" },
+        { key: "movyitaEnabled", title: "Enable MovyITA (video Movy 4K/FHD + audio ITA)", type: "checkbox" },
+        { key: "dualsyncEnabled", title: "Enable DualSync (video Cinejoy/Vidfast 4K/FHD + audio ITA)", type: "checkbox" },
+        { key: "realtimeEnabled", title: "Enable Real Time / NOVE / DMAX / Food Network", type: "checkbox" },
+        { key: "paccEnabled", title: "Enable PaCC", type: "checkbox" },
         { key: "cb01Enabled", title: "Enable CB01 Mixdrop", type: "checkbox" },
         // { key: "tvtapProxyEnabled", title: "TvTap NO MFP 🔓", type: "checkbox", default: "checked" }, // TVTAP RIMOSSO
         { key: "vavooNoMfpEnabled", title: "Vavoo NO MFP 🔓", type: "checkbox", default: false },
@@ -6315,6 +6324,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         'trailerEnabled', 'disableVixsrc', 'vixDirect', 'vixDirectFhd', 'vixProxy',
                         'guardahdEnabled', 'adnEnabled', 'guardaserieEnabled', 'vidxgoEnabled', 'guardoserieEnabled', 'guardaflixEnabled', 'cinemacityEnabled',
                         'eurostreamingEnabled', 'toonitaliaEnabled', 'toonEnabled', 'cb01Enabled',
+                        'movyitaEnabled', 'dualsyncEnabled', 'realtimeEnabled', 'paccEnabled',
                         'animesaturnEnabled', 'animeworldEnabled', 'animeunityEnabled'
                     ];
                     return providerKeys.some(k => cfg[k] !== undefined);
@@ -6356,6 +6366,11 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                 // TOON (onlineserietv.lol): default OFF - API mode enables it
                 const toonEnabled = envFlag('TOON_ENABLED') ?? (isDirectAPICall || (config as any).toonEnabled === true || rc?.toonEnabled === true);
                 console.log(`[TOON] Flag status: ${toonEnabled} (env: ${envFlag('TOON_ENABLED')}, config: ${(config as any).toonEnabled})`);
+                // Fork Ture919 (23/11/2026): fonti portate da PriSynx, default OFF (API mode le accende come le altre)
+                const movyitaEnabled = envFlag('MOVYITA_ENABLED') ?? (isDirectAPICall || (config as any).movyitaEnabled === true || rc?.movyitaEnabled === true);
+                const dualsyncEnabled = envFlag('DUALSYNC_ENABLED') ?? (isDirectAPICall || (config as any).dualsyncEnabled === true || rc?.dualsyncEnabled === true);
+                const realtimeEnabled = envFlag('REALTIME_ENABLED') ?? (isDirectAPICall || (config as any).realtimeEnabled === true || rc?.realtimeEnabled === true);
+                const paccEnabled = envFlag('PACC_ENABLED') ?? (isDirectAPICall || (config as any).paccEnabled === true || rc?.paccEnabled === true);
                 // Nuovo flag per inserire VixSrc nell'esecuzione parallela (prima era fuori e poteva saltare)
                 // FIX: usa config dell'utente, NON configCache globale
                 const vixsrcEnabled = (() => {
@@ -6383,6 +6398,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     !!guardaSerieEnabled, !!vidxgoEnabled, !!guardoserieEnabled, !!guardaflixEnabled,
                     !!guardaHdEnabled, !!adnEnabled, !!eurostreamingEnabled, !!toonitaliaEnabled, !!toonEnabled,
                     !!cb01Enabled, !!vixsrcEnabled, !!cinemacityEnabled, !!fastModeEnabled,
+                    !!movyitaEnabled, !!dualsyncEnabled, !!realtimeEnabled, !!paccEnabled,
                     mfpUrl || '', mfpPsw ? 'mfppsw' : '',
                     (config as any).vavooNoMfpEnabled ? '1' : '0',
                     (config as any).animeunityDirect ? '1' : '0',
@@ -6393,7 +6409,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                     (config as any).vixProxy ? '1' : '0',
                     (config as any).tvtapProxyEnabled ? '1' : '0',
                 ]);
-                if ((id.startsWith('kitsu:') || id.startsWith('mal:') || id.startsWith('tt') || id.startsWith('tmdb:')) && (trailerEnabled || animeUnityEnabled || animeSaturnEnabled || animeWorldEnabled || guardaSerieEnabled || vidxgoEnabled || guardoserieEnabled || guardaflixEnabled || guardaHdEnabled || adnEnabled || eurostreamingEnabled || toonitaliaEnabled || toonEnabled || cb01Enabled || vixsrcEnabled || cinemacityEnabled)) {
+                if ((id.startsWith('kitsu:') || id.startsWith('mal:') || id.startsWith('tt') || id.startsWith('tmdb:')) && (trailerEnabled || animeUnityEnabled || animeSaturnEnabled || animeWorldEnabled || guardaSerieEnabled || vidxgoEnabled || guardoserieEnabled || guardaflixEnabled || guardaHdEnabled || adnEnabled || eurostreamingEnabled || toonitaliaEnabled || toonEnabled || cb01Enabled || vixsrcEnabled || cinemacityEnabled || movyitaEnabled || dualsyncEnabled || realtimeEnabled || paccEnabled)) {
                     // Cache check before the expensive fan-out.
                     const _cachedStreams = _providerCacheGet(id, _providerConfigSig);
                     if (_cachedStreams) {
@@ -6490,6 +6506,10 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         if (l === 'toon' || l.startsWith('toon ') || l.startsWith('toon\n') || l.startsWith('toon\t') || l.includes('[toon]')) return 'toon';
                         if (l.includes('guardaflix')) return 'guardaflix';
                         if (l.includes('guardoserie')) return 'guardoserie';
+                        if (l.includes('movyita')) return 'movyita';
+                        if (l.includes('dualsync')) return 'dualsync';
+                        if (l.includes('real time')) return 'realtime';
+                        if (l.includes('pacc')) return 'pacc';
                         return 'generic';
                     };
                     const unifyStreams = (original: Stream[], providerLabelName: string): Stream[] => {
@@ -6637,6 +6657,10 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                                 if (existingQualityLine) outLines.push(existingQualityLine);
                             }
                             if (playerName) outLines.push(`▶️ ${playerName}`);
+                            // Fork Ture919 (23/11/2026): MovyITA/DualSync tengono la riga del sync dell'audio ITA (🔊 in sync, ⏱️ ritardo, ⚠️ non misurato)
+                            if (providerKey === 'movyita' || providerKey === 'dualsync') {
+                                for (const l of lines) if (/^(🔊|⏱️|⚠️|🔈)/.test(l)) outLines.push(l);
+                            }
                             // Build size/res combined line before proxy if present
                             let sizeResLine = '';
                             if (sizeHuman || resHuman) {
@@ -7141,6 +7165,43 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         }
                     }
 
+
+                    // Fork Ture919 (23/11/2026): fonti portate dal plugin Nuvio PriSynx (stesso autore di StreamViX)
+                    if (id.startsWith('tt') || id.startsWith('tmdb:')) {
+                        const pxBase = id.startsWith('tmdb:') ? `tmdb:${id.replace('tmdb:', '').split(':')[0]}` : id.split(':')[0];
+                        const pxSeries = seasonNumber != null && episodeNumber != null;
+                        const pxReq = {
+                            id: pxSeries ? `${pxBase}:${seasonNumber}:${episodeNumber}` : pxBase,
+                            type: (pxSeries ? 'series' : 'movie') as 'movie' | 'series',
+                            tmdbApiKey: config.tmdbApiKey || process.env.TMDB_API_KEY || '40a9faa1f6741afb2c0c40238d85f8d0',
+                            mfpUrl: mfpUrl || '',
+                            mfpPsw: mfpPsw || '',
+                        };
+                        if (movyitaEnabled && (pxSeries || isMovie)) {
+                            scheduleProviderRun('MovyITA', true, async () => {
+                                const { movyIta } = await import('./providers/dualaudio-provider');
+                                return { streams: await movyIta(pxReq) };
+                            }, 'MovyITA', false, 30000);
+                        }
+                        if (dualsyncEnabled && (pxSeries || isMovie)) {
+                            scheduleProviderRun('DualSync', true, async () => {
+                                const { dualSync } = await import('./providers/dualaudio-provider');
+                                return { streams: await dualSync(pxReq) };
+                            }, 'DualSync', false, 30000);
+                        }
+                        if (realtimeEnabled && pxSeries) {
+                            scheduleProviderRun('RealTime', true, async () => {
+                                const { realtime } = await import('./providers/realtime-provider');
+                                return { streams: await realtime(pxReq) };
+                            }, 'Real Time', false, 25000);
+                        }
+                        if (paccEnabled && (pxSeries || isMovie)) {
+                            scheduleProviderRun('PaCC', true, async () => {
+                                const { pacc } = await import('./providers/pacc-provider');
+                                return { streams: await pacc(pxReq) };
+                            }, 'PaCC', false, 25000);
+                        }
+                    }
 
                     if (fastModeEnabled) {
                         const picked = await pickFastModeStreams();

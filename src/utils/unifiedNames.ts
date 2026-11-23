@@ -41,6 +41,11 @@ export function providerLabel(provider: string, isFhd?: boolean): string {
     case 'toonitalia': return '🤌 ToonItalia 🎨';
     case 'toon': return '🤌 TOON 🧩';
     case 'netmirror': return '🤌 NetMirror 🪞';
+    // Fork Ture919 (23/11/2026): fonti portate da PriSynx
+    case 'movyita': return '🤌 MovyITA 🎬';
+    case 'dualsync': return '🤌 DualSync ⚡';
+    case 'realtime': return '🤌 Real Time 🍰';
+    case 'pacc': return '🤌 PaCC 🌐';
     default: return provider;
   }
 }

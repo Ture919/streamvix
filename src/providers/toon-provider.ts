@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Stream } from 'stremio-addon-sdk';
 import { resolveShortener, triggerWarmupAsync } from '../utils/shortenerResolver';
+import { tmdbInfo } from './prisynx-common';
 
 /**
  * TOON provider — onlineserietv.lol
@@ -248,6 +249,41 @@ async function searchSite(query: string, type: 'movie' | 'series'): Promise<stri
 }
 
 // ------------------------------------------------------------------
+// Fork Ture919 (23/11/2026): ricerca esatta via WordPress REST (come PriSynx plugin_onlineserietv.js / plugin_filmez.js).
+// Gli slug sono "<titolo>-<anno>" per i film e "<titolo>" o "<titolo>-<anno>" per le serie: un colpo solo, niente omonimi.
+// Filmez (filmez.club) usa lo stesso database (stessi post, stessi link uprot): coperto da qui.
+// ------------------------------------------------------------------
+function wpSlug(s: string): string {
+    return decodeEntities(String(s || '')).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+async function wpRestFind(info: { title: string; original: string; year: number }, type: 'movie' | 'series'): Promise<string | null> {
+    const keys = [...new Set([wpSlug(info.title), wpSlug(info.original)].filter(Boolean))];
+    if (!keys.length) return null;
+    const y = info.year;
+    const slugs: string[] = [];
+    for (const k of keys) {
+        if (type === 'movie') { if (y) for (const yy of [y, y - 1, y + 1]) slugs.push(`${k}-${yy}`); }
+        else { slugs.push(k); if (y) slugs.push(`${k}-${y}`); }
+    }
+    if (!slugs.length) return null;
+    const api = `${BASE_URL}/wp-json/wp/v2/${type === 'movie' ? 'film' : 'serietv'}?slug=${encodeURIComponent(slugs.join(','))}&per_page=20&_fields=slug,link`;
+    try {
+        const r = await axios.get(api, { headers: { 'User-Agent': UA, Accept: 'application/json' }, timeout: 8000, validateStatus: () => true });
+        if (r.status !== 200 || !Array.isArray(r.data) || !r.data.length) return null;
+        // preferisce lo slug nell'ordine di ricerca (anno esatto prima di anno +-1)
+        for (const s of slugs) {
+            const hit = r.data.find((x: any) => x && x.slug === s && typeof x.link === 'string');
+            if (hit) { console.log(`[TOON] WP REST slug "${s}" -> ${hit.link}`); return hit.link; }
+        }
+    } catch (e) {
+        console.warn('[TOON] WP REST error:', (e as Error).message);
+    }
+    return null;
+}
+
+// ------------------------------------------------------------------
 // Page fetch (cached)
 // ------------------------------------------------------------------
 async function fetchPage(url: string): Promise<string | null> {
@@ -405,7 +441,12 @@ export async function toon(req: StreamRequest): Promise<Stream[]> {
         const query = normalizeQuery(resolvedTitle);
         if (!query) return streams;
 
-        const pageUrl = await searchSite(query, req.type);
+        let pageUrl: string | null = null;
+        if (!kitsuId && (imdbId || tmdbId)) {
+            const info = await tmdbInfo({ imdb: imdbId, tmdb: tmdbId, season, episode }, req.type === 'series', req.config?.tmdbApiKey).catch(() => null);
+            if (info) pageUrl = await wpRestFind(info, req.type);
+        }
+        if (!pageUrl) pageUrl = await searchSite(query, req.type);
         if (!pageUrl) return streams;
 
         const html = await fetchPage(pageUrl);
@@ -417,7 +458,7 @@ export async function toon(req: StreamRequest): Promise<Stream[]> {
                 console.log('[TOON] no msf link on movie page');
                 return streams;
             }
-            const stream = await resolveMsfToStream(msf, `🎬 ${title} • Ita`);
+            const stream = await resolveMsfToStream(msf, `🎬 ${resolvedTitle} • Ita`);
             if (stream) streams.push(stream);
             return streams;
         }
