@@ -312,6 +312,27 @@ async function movySources(info: TmdbInfo, enTitle: string, isTv: boolean, s: nu
     return { sources: out, headers };
 }
 
+// Fork Ture919 (23/11/2026): alcuni server video (es. Movy "Atlanta") danno solo i primi ~30 pezzi e poi 404:
+// il player parte e si blocca dopo 2 minuti. Prima di proporre la fonte si provano un pezzo a meta' e l'ultimo.
+async function videoIntero(videoUrl: string, headers: Record<string, string>): Promise<boolean> {
+    try {
+        let url = videoUrl;
+        let testo = await getText(url, headers, 8000);
+        const varianti = [...testo.matchAll(/#EXT-X-STREAM-INF[^\n]*\n([^\n#][^\n]*)/g)].map((m) => m[1].trim());
+        if (varianti.length) { url = new URL(varianti[varianti.length - 1], url).toString(); testo = await getText(url, headers, 8000); }
+        const pezzi = testo.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+        if (pezzi.length < 40) return true;
+        for (const k of [Math.floor(pezzi.length / 2), pezzi.length - 1]) {
+            const r = await fetch(new URL(pezzi[k], url).toString(), { headers: { ...headers, Range: 'bytes=0-1023' }, signal: AbortSignal.timeout(6000) } as any);
+            try { await r.arrayBuffer(); } catch { /* corpo non letto */ }
+            if (r.status === 404 || r.status === 410 || r.status === 403) return false;
+        }
+        return true;
+    } catch {
+        return true; // nel dubbio (lentezza, rete) la fonte resta
+    }
+}
+
 export async function movyIta(req: PrisynxReq): Promise<Stream[]> {
     const isTv = req.type === 'series';
     const pid = parseId(req.id);
@@ -339,7 +360,9 @@ export async function movyIta(req: PrisynxReq): Promise<Stream[]> {
         if (auto.length) measured = classify(auto[0]);
     }
     const out: Stream[] = [];
-    for (const src of movy.sources.sort((a, b) => Number(b.qkey) - Number(a.qkey))) {
+    const interi = await Promise.all(movy.sources.map((src) => videoIntero(src.url, movy.headers)));
+    const buone = movy.sources.filter((src, i) => { if (!interi[i]) log('MovyITA', `Movy ${src.server} ${src.qkey}p scartato: video interrotto (404 a meta')`); return interi[i]; });
+    for (const src of buone.sort((a, b) => Number(b.qkey) - Number(a.qkey))) {
         const sync = src.measured ? measured : { level: 'unknown', tag: 'sync audio ITA non misurato (server diverso)' } as Sync;
         if (sync.level === 'red') continue;
         out.push(buildStream('MovyITA', info, isTv, s, e, src.qkey, `Movy ${src.server}`,
@@ -544,6 +567,7 @@ export async function dualSync(req: PrisynxReq): Promise<Stream[]> {
         for (const qk of enc.qualities || []) {
             const r = enc.renditions[qk];
             if (!r) continue;
+            if (!(await videoIntero(r.url, enc.headers))) { log('DualSync', `${enc.site}/${enc.server} ${qk}p scartato: video interrotto (404 a meta')`); continue; }
             out.push(buildStream('DualSync', info, isTv, s, e, qk, `${enc.site} ${enc.server}`, masterDataUri(r.url, qk, ita, enc.original, vsubs), enc.headers, sync, subsFor(ita)));
         }
     }
