@@ -6503,7 +6503,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                                 if (first && !/Synthetic FHD|Proxy FHD/i.test(first)) {
                                     canonicalVixBase = first
                                         .replace(/^\s*🎬\s*/, '')
-                                        .replace(/\[?(ITA|SUB)\]?/ig, '')
+                                        .replace(/\[(ITA|SUB)\]|(ITA|SUB)/g, '')
                                         .replace(/🔒|🔓FHD?|🔓/g, '')
                                         .replace(/\s*•\s*/g, ' ')
                                         .replace(/\s{2,}/g, ' ')
@@ -6548,7 +6548,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                             // Extra cleanup for VixSrc: rimuovi eventuali marker lingua / lock rimasti nel baseLine
                             if (providerKey === 'vixsrc') {
                                 baseLine = baseLine
-                                    .replace(/\[?(ITA|SUB)\]?/ig, '')
+                                    .replace(/\[(ITA|SUB)\]|(ITA|SUB)/g, '')
                                     .replace(/🔒|🔓FHD?|🔓/g, '')
                                     .replace(/\s*•\s*/g, ' ')
                                     .replace(/\s{2,}/g, ' ')
@@ -7289,6 +7289,30 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                         }
                     } catch (trailerErr) {
                         console.warn('[Trailer] Error fetching trailer:', (trailerErr as any)?.message || trailerErr);
+                    }
+                }
+
+                // Fork Ture919 (23/11/2026): AIOStreams ricava risoluzione e lingua dal nome del file; gli stream senza
+                // filename (VixSrc, VidXgo, ...) ne ricevono uno ricavato da titolo e simboli: 🅵🅷🅳/FHD/1080 -> 1080p, 720 -> 720p,
+                // 🇮🇹/[ITA] -> ITA, 🇬🇧/ENG -> ENG, [SUB] -> SUB.ITA. Niente risoluzione inventata se il titolo non la dice.
+                {
+                    const pezziId = String(id || '').split(':');
+                    const sE = pezziId.length >= 3 ? Number(pezziId[pezziId.length - 2]) : NaN;
+                    const eE = pezziId.length >= 3 ? Number(pezziId[pezziId.length - 1]) : NaN;
+                    const ep = Number.isFinite(sE) && Number.isFinite(eE)
+                        ? `.S${String(sE).padStart(2, '0')}E${String(eE).padStart(2, '0')}` : '';
+                    for (const st of allStreams as any[]) {
+                        if (!st || st.behaviorHints?.filename) continue;
+                        const testo = `${st.name || ''} ${st.title || ''} ${st.description || ''}`;
+                        const res = /🅵🅷🅳|\bFHD\b|\b1080p?\b/i.test(testo) ? '1080p' : (/\b720p?\b/i.test(testo) ? '720p' : '');
+                        const lingue: string[] = [];
+                        if (/🇮🇹|\[ITA\]|\bITA\b/.test(testo)) lingue.push('ITA');
+                        if (/🇬🇧|\bENG\b/.test(testo)) lingue.push('ENG');
+                        if (/\[SUB\]/.test(testo)) lingue.push('SUB.ITA');
+                        if (!res && !lingue.length) continue;
+                        const riga = String(st.title || st.description || '').split('\n')[0].replace(/🎬/g, '').replace(/\(S\d+E\d+\)|▪.*$/g, '');
+                        const base = riga.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]+/g, ' ').trim().replace(/\s+/g, '.') || 'Stream';
+                        st.behaviorHints = { ...(st.behaviorHints || {}), filename: [base + ep, res, ...lingue].filter(Boolean).join('.') };
                     }
                 }
 

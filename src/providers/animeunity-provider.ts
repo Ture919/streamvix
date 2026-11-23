@@ -907,11 +907,25 @@ export class AnimeUnityProvider {
         animeUrl,
         baseTitle
       );
-      // Nome file "parlante": AIOStreams ricava la lingua dal filename e i link EasyProxy (manifest.m3u8) non ne hanno uno.
+      // Risoluzione massima: la pagina del player VixCloud dichiara window.canPlayFHD = true quando c'è il 1080p
+      // (stesso criterio del plugin PriSynx: fhd ? 1080p : 720p).
+      let risoluzione = '';
+      try {
+        const embedHtml = await auFetchResource(embedUrl, caches, {
+          ttlMs: TTL.streamPage,
+          cacheKey: `au-embed-fhd:${videoId}`,
+          timeoutMs: FETCH_TIMEOUT,
+          headers: { referer: videoPage, 'user-agent': USER_AGENT },
+        });
+        risoluzione = /window\.canPlayFHD\s*=\s*true/.test(String(embedHtml || '')) ? '1080p' : '720p';
+      } catch {
+        risoluzione = '';
+      }
+      // Nome file "parlante": AIOStreams ricava lingua e risoluzione dal filename e i link EasyProxy (manifest.m3u8) non ne hanno uno.
       const pad = (n: number) => String(n).padStart(2, '0');
       const titoloFile = String(displayTitle).normalize('NFD').replace(/[̀-ͯ]/g, '')
         .replace(/[^A-Za-z0-9 ]+/g, ' ').trim().replace(/\s+/g, '.');
-      const fileName = `${titoloFile}${isMovie ? '' : `.S${pad(sNum)}E${pad(epNum)}`}.${langLabel === 'ITA' ? 'ITA' : 'JPN.SUB.ITA'}`;
+      const fileName = `${titoloFile}${isMovie ? '' : `.S${pad(sNum)}E${pad(epNum)}`}${risoluzione ? '.' + risoluzione : ''}.${langLabel === 'ITA' ? 'ITA' : 'JPN.SUB.ITA'}`;
       for (const st of built) {
         (st as any).behaviorHints = { ...((st as any).behaviorHints || {}), filename: fileName };
       }
