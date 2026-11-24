@@ -7123,7 +7123,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                                 }
                             });
                             return { streams };
-                        }, 'ToonItalia', false, 30000);  // ToonItalia: timeout 30s
+                        }, 'ToonItalia', false, null);  // Fork Ture919 24/11/2026: era 30 s; con FlareSolverr (~16 s) TureFlix superava i 20 s di AIOStreams e perdeva TUTTE le fonti -> limite comune 11 s
                     }
 
                     // TOON (onlineserietv.lol) - Ricerca dinamica via TMDb / Kitsu (serie + film)
@@ -7172,7 +7172,7 @@ function createBuilder(initialConfig: AddonConfig = {}) {
                                     }
                                 });
                                 return { streams };
-                            }, 'TOON', false, 30000);
+                            }, 'TOON', false, null);  // Fork Ture919 24/11/2026: era 30 s -> limite comune 11 s (vedi ToonItalia)
                         }
                     }
 
