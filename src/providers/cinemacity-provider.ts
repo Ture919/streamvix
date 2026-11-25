@@ -47,7 +47,10 @@ const USER_AGENT =
   'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 // Cloudflare Worker that proxies cinemacity.cc and bypasses the CF challenge
 // (mirrors the upstream easystreams/providers/cinemacity.js approach).
-const WORKER_HOST = Buffer.from('Y2MubGVhbmhodTA2MTIwNi53b3JrZXJzLmRldg==', 'base64').toString('utf-8');
+// Fork Ture919 (25/11/2026): il worker vecchio (cc.leanhhu061206.workers.dev) restituisce la sitemap vuota; il plugin
+// ufficiale EasyStreams CinemaCity 1.0.22 (manifest 1.5.16) usa ora il proxy di realbestia con gli stessi percorsi.
+// Si cambia con CINEMACITY_PROXY_HOST senza ricompilare.
+const WORKER_HOST = process.env.CINEMACITY_PROXY_HOST || 'cc.realbestia.com';
 
 function logC(...args: any[]) { try { console.log('[CinemaCity]', ...args); } catch { /* */ } }
 
