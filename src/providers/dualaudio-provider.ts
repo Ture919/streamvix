@@ -462,11 +462,30 @@ async function pickFromServers(keep: { add: (e: Encode) => void; expired: () => 
     if (fhd) { fhd.qualities = ['1080']; keep.add(fhd); }
 }
 
+// Fork Ture919 (25/11/2026): i server Cinejoy si provano TUTTI INSIEME, ognuno al massimo CJ_SERVER_MS. Misurato il 25/11:
+// Light (4K+1080) e Nebula (1080) rispondono in 0,5-0,8 s, Sirius si blocca sempre fino al limite (12 s): in fila, quando Light
+// non ha il titolo, Sirius da solo faceva sforare gli 11 s di TureFlix. La scelta resta quella di pickFromServers: primo 4K
+// nell'ordine (4K prima, poi l'ordine dell'elenco: Light prima di Sirius) e primo 1080 senza 4K.
+const CJ_SERVER_MS = 5000;
+async function pickFromServersInsieme(keep: { add: (e: Encode) => void; expired: () => boolean }, siteName: string, servers: any[], open: (sv: any) => Promise<Encode | null>) {
+    servers = servers.slice().sort((a, b) => is4k(b) - is4k(a));
+    const risposte = await Promise.all(servers.map((sv) => {
+        let timer: any;
+        const limite = new Promise<null>((res) => { timer = setTimeout(() => { log('DualSync', `${siteName} ${sv?.name}: oltre ${CJ_SERVER_MS} ms, saltato`); res(null); }, CJ_SERVER_MS); });
+        const prova = open(sv).catch((err: any) => { log('DualSync', `${siteName} ${sv?.name}: ${err?.message || err}`); return null; });
+        return Promise.race([prova, limite]).finally(() => clearTimeout(timer));
+    }));
+    const uhd = risposte.find((enc) => enc && enc.renditions['2160']) || null;
+    const fhd = risposte.find((enc) => enc && !enc.renditions['2160']) || null;
+    if (uhd) { uhd.qualities = fhd || !uhd.renditions['1080'] ? ['2160'] : ['2160', '1080']; keep.add(uhd); }
+    if (fhd) { fhd.qualities = ['1080']; keep.add(fhd); }
+}
+
 async function cinejoy(ctx: { info: TmdbInfo; enTitle: string; isTv: boolean; s: number; e: number }, keep: any) {
     const headers = { 'User-Agent': DS_UA, Accept: '*/*', Origin: CINEJOY_ORIGIN, Referer: CINEJOY_ORIGIN + '/' };
     const list = (JSON.parse(await getText(`${CINEJOY_API}/servers`, headers, 8000)) || {}).servers || [];
     const servers = list.filter((x: any) => x && x.name && x.status === 'ok');
-    await pickFromServers(keep, 'Cinejoy', servers, async (server) => {
+    await pickFromServersInsieme(keep, 'Cinejoy', servers, async (server) => {
         const p: Record<string, string> = { title: ctx.enTitle, type: ctx.isTv ? 'series' : 'movie', year: ctx.info.year ? String(ctx.info.year) : '', imdb: ctx.info.imdbId, tmdb: ctx.info.tmdbId, server: server.name };
         if (ctx.isTv) { p.season = String(ctx.s); p.episode = String(ctx.e); }
         const q = Object.keys(p).map((k) => k + '=' + encodeURIComponent(p[k])).join('&');
@@ -524,6 +543,9 @@ async function dualSyncCalcola(req: PrisynxReq): Promise<Stream[]> {
     };
     const collect = (async () => {
         try { await cinejoy(ctx, keep); } catch (err: any) { log('DualSync', 'Cinejoy:', err?.message || err); }
+        // Fork Ture919 (25/11/2026): Vidfast/Vidcore/Vidup solo se Cinejoy non ha trovato niente (prima giravano sempre,
+        // e dal 24/11 rispondono sempre 404: solo secondi persi)
+        if (encodes.length) return;
         for (const site of VIDFAST_SITES) {
             if (keep.expired()) break;
             const before = encodes.length;
